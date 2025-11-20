@@ -75,5 +75,5 @@ class SlackSessionMiddleware(BaseHTTPMiddleware):
 
         except Exception as e:
             logger.error(f"Error in Slack session middleware: {e}", exc_info=True)
-            # Continue without session context
-            return await call_next(request)
+            # Re-raise the exception to avoid duplicate request handling
+            raise

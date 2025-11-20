@@ -177,6 +177,36 @@ def _get_authenticated_client():
     return client, user_id, None
 
 
+def _resolve_channel_name(client, channel_name: str) -> Optional[str]:
+    """
+    Resolve a channel name to its ID, paginating through all results.
+
+    Args:
+        client: Authenticated Slack client
+        channel_name: Channel name (without #)
+
+    Returns:
+        Channel ID if found, None otherwise
+    """
+    cursor = None
+    while True:
+        kwargs = {"types": "public_channel,private_channel"}
+        if cursor:
+            kwargs["cursor"] = cursor
+
+        channels_response = client.conversations_list(**kwargs)
+        for channel in channels_response.get("channels", []):
+            if channel.get("name") == channel_name:
+                return channel.get("id")
+
+        # Check if there are more pages
+        cursor = channels_response.get("response_metadata", {}).get("next_cursor")
+        if not cursor:
+            break
+
+    return None
+
+
 def get_channel_messages(
     channel_id: str,
     limit: int = 100,
@@ -205,14 +235,7 @@ def get_channel_messages(
         # Handle channel name format (e.g., '#general' -> lookup ID)
         if channel_id.startswith("#"):
             channel_name = channel_id[1:]
-            # Look up channel ID by name
-            channels_response = client.conversations_list(types="public_channel,private_channel")
-            channel_id = None
-            for channel in channels_response.get("channels", []):
-                if channel.get("name") == channel_name:
-                    channel_id = channel.get("id")
-                    break
-
+            channel_id = _resolve_channel_name(client, channel_name)
             if not channel_id:
                 return {"ok": False, "error": f"Channel '{channel_name}' not found"}
 
@@ -278,13 +301,7 @@ def get_thread_replies(
         # Handle channel name format
         if channel_id.startswith("#"):
             channel_name = channel_id[1:]
-            channels_response = client.conversations_list(types="public_channel,private_channel")
-            channel_id = None
-            for channel in channels_response.get("channels", []):
-                if channel.get("name") == channel_name:
-                    channel_id = channel.get("id")
-                    break
-
+            channel_id = _resolve_channel_name(client, channel_name)
             if not channel_id:
                 return {"ok": False, "error": f"Channel '{channel_name}' not found"}
 
