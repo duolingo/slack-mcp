@@ -1,2 +1,0 @@
-[console_scripts]
-slack-mcp = main:main
