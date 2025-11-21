@@ -1,0 +1,28 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.so
+
+# Packaging
+*.egg-info/
+build/
+dist/
+
+# Environments
+.env
+.venv/
+venv/
+.idea/
+.vscode/
+
+# macOS
+.DS_Store
+
+# Secrets
+.credentials/
+token.json
+
+# Logs
+*.log
+mcp_server_debug.log
+
