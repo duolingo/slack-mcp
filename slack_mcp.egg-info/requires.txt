@@ -1,0 +1,9 @@
+fastmcp==2.11.3
+fastapi>=0.115.0
+slack-sdk>=3.33.5
+python-dotenv>=1.0.0
+aiohttp>=3.9.0
+pytest>=8.0.0
+
+[dev]
+ruff>=0.12.4
