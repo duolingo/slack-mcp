@@ -7,7 +7,7 @@ A read-only MCP (Model Context Protocol) server for Slack with OAuth authenticat
 
 ## Demo
 
-![Slack MCP Demo](slack_mcp_demo.gif)
+https://github.com/user-attachments/assets/211bd428-209f-461a-b9a1-9cc85fd7c438
 
 ### Available Tools
 
