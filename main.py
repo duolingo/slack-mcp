@@ -3,7 +3,7 @@
 Slack MCP Server
 Main entry point for the Slack Model Context Protocol server.
 
-Features secure multi-user authentication with session-based access control.
+Features secure multi-user authentication via OAuth 2.1 proxy authorization server.
 """
 
 import logging
@@ -12,15 +12,10 @@ import sys
 from importlib import metadata
 
 import slack_tools
-from auth import context
-from auth.oauth_config import get_oauth_config, reload_oauth_config
-from auth.oauth_handler import exchange_code_for_token
-from auth.session_middleware import SlackSessionMiddleware
+from auth.oauth_config import get_oauth_config
 from fastapi import Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from fastmcp import FastMCP
-from fastmcp.server.dependencies import get_context
-from starlette.middleware import Middleware
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,30 +23,59 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Reload OAuth config
-reload_oauth_config()
-
-# Initialize FastMCP server with session middleware
-session_middleware = Middleware(SlackSessionMiddleware)
+server = FastMCP("Slack MCP Server")
 
 
-class SecureFastMCP(FastMCP):
-    """Custom FastMCP with session middleware for secure authentication."""
+def configure_server_for_http():
+    """
+    Configure the OAuth 2.1 authentication provider for HTTP transport.
+    Must be called BEFORE server.run().
 
-    def streamable_http_app(self):
-        """Override to add secure middleware stack."""
-        app = super().streamable_http_app()
+    Sets up SlackOAuthProvider (proxy pattern) and AuthInfoMiddleware
+    for extracting Slack tokens from MCP token claims.
+    """
+    config = get_oauth_config()
 
-        # Add session middleware
-        app.user_middleware.insert(0, session_middleware)
+    if not config.is_configured():
+        logger.warning("OAuth credentials not configured")
+        return
 
-        # Rebuild middleware stack
-        app.middleware_stack = app.build_middleware_stack()
-        logger.info("Added SlackSessionMiddleware for secure authentication")
-        return app
+    try:
+        from auth.auth_info_middleware import AuthInfoMiddleware
+        from auth.slack_oauth_provider import SlackOAuthProvider
+        from mcp.server.auth.settings import ClientRegistrationOptions
 
+        # base_url = what MCP clients connect to (the public-facing URL).
+        # Must use get_oauth_base_url() which respects SLACK_EXTERNAL_URL,
+        # because the OAuth metadata (issuer, authorization_endpoint, token_endpoint, etc.)
+        # must advertise URLs reachable by external MCP clients, not localhost.
+        # slack_redirect_uri = what Slack redirects to (same external URL)
+        provider = SlackOAuthProvider(
+            slack_client_id=config.client_id,
+            slack_client_secret=config.client_secret,
+            slack_redirect_uri=config.get_slack_callback_url(),
+            slack_scopes=config.scopes,
+            base_url=config.get_oauth_base_url(),
+            required_scopes=sorted(config.scopes),
+            client_registration_options=ClientRegistrationOptions(
+                enabled=True,
+                valid_scopes=sorted(config.scopes),
+                default_scopes=sorted(config.scopes),
+            ),
+        )
+        server.auth = provider
 
-server = SecureFastMCP("Slack MCP Server")
+        # Add AuthInfoMiddleware to extract Slack auth info from token claims
+        auth_middleware = AuthInfoMiddleware()
+        server.add_middleware(auth_middleware)
+
+        logger.info("OAuth 2.1 enabled with proxy authorization server pattern")
+        logger.info("MCP clients authenticate via standard OAuth 2.1 with this server")
+        logger.info("Slack tokens are stored server-side, never exposed to clients")
+
+    except Exception as exc:
+        logger.error("Failed to initialize OAuth 2.1 provider: %s", exc, exc_info=True)
+        raise
 
 
 def safe_print(text):
@@ -227,214 +251,11 @@ def slack_get_channels(
     return slack_tools.get_channels(channel_id, types, limit, cursor, include_members)
 
 
-@server.tool()
-def slack_get_oauth_url() -> dict:
-    """
-    Get the OAuth authorization URL for users to authenticate.
-
-    Returns:
-        Dictionary with authorization URL
-    """
-    from auth.session_store import get_session_store
-
-    config = get_oauth_config()
-    if not config.is_configured():
-        return {
-            "ok": False,
-            "error": "OAuth not configured. Please set SLACK_CLIENT_ID and SLACK_CLIENT_SECRET.",
-        }
-
-    # Get session ID from FastMCP context
-    session_id = None
-    try:
-        ctx = get_context()
-        if ctx and hasattr(ctx, "session_id"):
-            session_id = ctx.session_id
-            logger.info(f"Got FastMCP session ID: {session_id}")
-            # Also set it in our context variable for other functions
-            context.fastmcp_session_id.set(session_id)
-    except Exception as e:
-        logger.error(f"Error getting FastMCP context: {e}")
-
-    if not session_id:
-        return {
-            "ok": False,
-            "error": "No session ID found. Unable to generate OAuth URL.",
-        }
-
-    # Generate cryptographic state for CSRF protection
-    store = get_session_store()
-    state = store.generate_oauth_state(session_id)
-
-    return {
-        "ok": True,
-        "authorization_url": config.get_authorization_url(state=state),
-        "instructions": (
-            "Visit the authorization URL to authenticate. "
-            "After authorization, you'll receive a user_id to use with other tools."
-        ),
-    }
-
-
 # Add health check endpoint for ECS
 @server.custom_route("/health", methods=["GET"])
 async def health_check(request: Request):
     """Health check endpoint for load balancer."""
     return JSONResponse({"status": "healthy"})
-
-
-# Add OAuth callback endpoint for HTTP transport
-@server.custom_route("/oauth2callback", methods=["GET"])
-async def oauth_callback(request: Request):
-    """
-    Handle OAuth callback from Slack.
-
-    This endpoint exchanges the authorization code for a token and binds
-    it to the current session for secure access.
-    """
-    code = request.query_params.get("code")
-    error = request.query_params.get("error")
-
-    if error:
-        return HTMLResponse(
-            content=f"""
-            <html>
-                <body>
-                    <h1>OAuth Error</h1>
-                    <p>Error: {error}</p>
-                    <p>You can close this window.</p>
-                </body>
-            </html>
-            """,
-            status_code=400,
-        )
-
-    if not code:
-        return HTMLResponse(
-            content="""
-            <html>
-                <body>
-                    <h1>OAuth Error</h1>
-                    <p>No authorization code received.</p>
-                    <p>You can close this window.</p>
-                </body>
-            </html>
-            """,
-            status_code=400,
-        )
-
-    # Extract state parameter for CSRF validation
-    state = request.query_params.get("state")
-
-    if not state:
-        return HTMLResponse(
-            content="""
-            <html>
-                <body>
-                    <h1>Authentication Failed</h1>
-                    <p>Error: Missing OAuth state parameter.</p>
-                    <p>This may indicate a CSRF attack attempt.</p>
-                    <p>You can close this window.</p>
-                </body>
-            </html>
-            """,
-            status_code=400,
-        )
-
-    # Validate OAuth state parameter and get the bound session ID (CSRF protection)
-    from auth.session_store import get_session_store
-
-    store = get_session_store()
-
-    # Get the session_id that was bound to this state
-    # We need to look it up before validation to know which session to validate against
-    with store._lock:
-        if state not in store._oauth_states:
-            logger.error(f"Invalid OAuth state: {state} not found")
-            return HTMLResponse(
-                content="""
-                <html>
-                    <body>
-                        <h1>Authentication Failed</h1>
-                        <p>Error: Invalid or expired OAuth state parameter.</p>
-                        <p>Please generate a new OAuth URL using the slack_get_oauth_url tool.</p>
-                        <p>You can close this window.</p>
-                    </body>
-                </html>
-                """,
-                status_code=400,
-            )
-        session_id, _ = store._oauth_states[state]
-
-    logger.info(f"OAuth callback with session ID: {session_id}")
-
-    # Validate and consume the OAuth state
-    if not store.validate_and_consume_oauth_state(state, session_id):
-        logger.error(f"SECURITY: Invalid OAuth state for session {session_id}")
-        return HTMLResponse(
-            content="""
-            <html>
-                <body>
-                    <h1>Authentication Failed</h1>
-                    <p>Error: Invalid or expired OAuth state parameter.</p>
-                    <p>This may indicate a CSRF attack attempt or an expired authorization request.</p>
-                    <p>Please generate a new OAuth URL and try again.</p>
-                    <p>You can close this window.</p>
-                </body>
-            </html>
-            """,
-            status_code=400,
-        )
-
-    # Set session context for token exchange
-    context.fastmcp_session_id.set(session_id)
-
-    try:
-        # Exchange code for token (will bind to session automatically)
-        token, user_id, exchange_error = await exchange_code_for_token(code)
-
-        if exchange_error:
-            return HTMLResponse(
-                content=f"""
-                <html>
-                    <body>
-                        <h1>Authentication Failed</h1>
-                        <p>Error: {exchange_error}</p>
-                        <p>You can close this window.</p>
-                    </body>
-                </html>
-                """,
-                status_code=500,
-            )
-
-        return HTMLResponse(
-            content=f"""
-            <html>
-                <body>
-                    <h1>✅ Authentication Successful!</h1>
-                    <p>You have been authenticated as user: <strong>{user_id}</strong></p>
-                    <p>Your session is now authorized to access Slack.</p>
-                    <p>You can close this window and return to Cursor.</p>
-                </body>
-            </html>
-            """
-        )
-    except Exception as e:
-        # Catch any unexpected exceptions and return user-friendly error
-        logger.error(f"Unexpected error in OAuth callback: {e}", exc_info=True)
-        return HTMLResponse(
-            content=f"""
-            <html>
-                <body>
-                    <h1>Authentication Failed</h1>
-                    <p>An unexpected error occurred during authentication.</p>
-                    <p>Error: {e!s}</p>
-                    <p>You can close this window and try again.</p>
-                </body>
-            </html>
-            """,
-            status_code=500,
-        )
 
 
 def main():
@@ -478,13 +299,15 @@ def main():
     safe_print("   🔍 slack_search_messages - Search messages")
     safe_print("   👤 slack_get_users - List users or get user profile")
     safe_print("   📢 slack_get_channels - List channels or get channel info")
-    safe_print("   🔐 slack_get_oauth_url - Get OAuth authorization URL")
     safe_print("")
 
     if not config.is_configured():
         safe_print("⚠️  Warning: OAuth not configured!")
         safe_print("   Please set SLACK_CLIENT_ID and SLACK_CLIENT_SECRET environment variables")
         safe_print("")
+
+    # Configure OAuth 2.1 (must be before server.run)
+    configure_server_for_http()
 
     try:
         safe_print("🚀 Starting HTTP server")

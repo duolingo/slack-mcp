@@ -30,21 +30,40 @@ def test_oauth_config_with_env_vars(monkeypatch):
     assert config.is_configured() is True
 
 
-def test_redirect_uri():
-    """Test redirect URI generation."""
+def test_callback_url():
+    """Test callback URL generation."""
     config = SlackOAuthConfig()
-    assert config.redirect_uri.endswith("/oauth2callback")
+    assert config.get_slack_callback_url().endswith("/oauth2callback")
 
 
-def test_authorization_url():
-    """Test authorization URL generation."""
+def test_https_non_default_port_preserved(monkeypatch):
+    """Test that non-default HTTPS port is included in base_url."""
+    monkeypatch.setenv("SLACK_MCP_BASE_URI", "https://mcp.example")
+    monkeypatch.setenv("SLACK_MCP_PORT", "8443")
+    monkeypatch.delenv("SLACK_EXTERNAL_URL", raising=False)
+
     config = SlackOAuthConfig()
-    config.client_id = "test_client_id"
+    assert config.base_url == "https://mcp.example:8443"
 
-    auth_url = config.get_authorization_url()
-    assert "slack.com/oauth/v2/authorize" in auth_url
-    assert "client_id=test_client_id" in auth_url
-    assert "user_scope=" in auth_url
+
+def test_https_default_port_omitted(monkeypatch):
+    """Test that default HTTPS port (443) is omitted from base_url."""
+    monkeypatch.setenv("SLACK_MCP_BASE_URI", "https://mcp.example")
+    monkeypatch.setenv("SLACK_MCP_PORT", "443")
+    monkeypatch.delenv("SLACK_EXTERNAL_URL", raising=False)
+
+    config = SlackOAuthConfig()
+    assert config.base_url == "https://mcp.example"
+
+
+def test_explicit_port_in_uri_preserved(monkeypatch):
+    """Test that explicit port in base URI is preserved as-is."""
+    monkeypatch.setenv("SLACK_MCP_BASE_URI", "https://mcp.example:9090")
+    monkeypatch.setenv("SLACK_MCP_PORT", "8443")
+    monkeypatch.delenv("SLACK_EXTERNAL_URL", raising=False)
+
+    config = SlackOAuthConfig()
+    assert config.base_url == "https://mcp.example:9090"
 
 
 if __name__ == "__main__":
