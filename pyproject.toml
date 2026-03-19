@@ -8,7 +8,6 @@ dependencies = [
   "fastapi>=0.115.0",
   "slack-sdk>=3.33.5",
   "python-dotenv>=1.0.0",
-  "aiohttp>=3.9.0",
 ]
 description = "Slack MCP Server with OAuth authentication"
 name = "slack-mcp"

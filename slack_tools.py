@@ -2,8 +2,8 @@
 Slack MCP Tools
 Provides tools for interacting with Slack conversations, users, and channels.
 
-All tools use session-based authentication and automatically retrieve
-the appropriate user's credentials from the session context.
+All tools use OAuth 2.1 authentication and automatically retrieve
+the appropriate user's credentials from the token claims.
 """
 
 import logging
@@ -11,9 +11,8 @@ import re
 from datetime import datetime, timedelta
 from typing import Optional
 
-from auth import context
-from auth.oauth_handler import get_slack_client_for_session, validate_session_token
 from fastmcp.server.dependencies import get_context
+from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
 logger = logging.getLogger(__name__)
@@ -121,60 +120,43 @@ def _build_search_query(
     return " ".join(query_parts)
 
 
-def _get_session_context():
+def _get_oauth21_client():
     """
-    Extract session ID and user ID from FastMCP context.
-    Returns tuple of (session_id, user_id)
-    """
-    session_id = None
-    user_id = None
+    Get a Slack client from OAuth 2.1 context (set by AuthInfoMiddleware from token claims).
 
+    In proxy mode, the Slack token was already validated during the OAuth exchange
+    and is stored server-side. AuthInfoMiddleware extracts it from token claims.
+
+    Returns:
+        tuple: (client, user_id) or (None, None)
+    """
     try:
         ctx = get_context()
-        if ctx and hasattr(ctx, "session_id"):
-            session_id = ctx.session_id
-            context.fastmcp_session_id.set(session_id)
-
-            # Get user ID from session store
-            from auth.session_store import get_session_store
-
-            store = get_session_store()
-            user_id = store.get_user_by_session(session_id)
-            if user_id:
-                context.authenticated_user_id.set(user_id)
-                logger.debug(f"Found user {user_id} for session {session_id}")
+        if ctx:
+            slack_token = ctx.get_state("slack_token")
+            user_id = ctx.get_state("authenticated_user_id")
+            if slack_token and user_id:
+                logger.debug(f"OAuth 2.1: Got Slack token from context for user {user_id}")
+                return WebClient(token=slack_token), user_id
     except Exception as e:
-        logger.error(f"Error getting session context: {e}")
+        logger.debug(f"OAuth 2.1: Could not get token from FastMCP context: {e}")
 
-    return session_id, user_id
+    return None, None
 
 
 def _get_authenticated_client():
     """
-    Get authenticated Slack client for current session.
-
-    Handles session validation and client initialization with proper error handling.
+    Get authenticated Slack client for current session via OAuth 2.1.
 
     Returns:
         tuple: (client, user_id, error_dict)
         - On success: (SlackClient, str, None)
         - On failure: (None, None, {"ok": False, "error": str})
     """
-    session_id, user_id = _get_session_context()
-
-    is_valid, error_msg = validate_session_token()
-    if not is_valid:
-        return None, None, {"ok": False, "error": error_msg}
-
-    client = get_slack_client_for_session()
-    if not client:
-        return (
-            None,
-            None,
-            {"ok": False, "error": "Failed to get Slack client for authenticated user"},
-        )
-
-    return client, user_id, None
+    client, user_id = _get_oauth21_client()
+    if client and user_id:
+        return client, user_id, None
+    return None, None, {"ok": False, "error": "Not authenticated. Complete the OAuth flow first."}
 
 
 def _resolve_channel_name(client, channel_name: str) -> Optional[str]:

@@ -1,30 +1,44 @@
 """
 OAuth Configuration Management for Slack MCP server.
-Handles OAuth 2.0 configuration (tokens managed by session_store).
+Handles OAuth 2.1 proxy authorization server configuration.
 """
 
 import os
-from urllib.parse import quote, urlparse
+from threading import RLock
+from urllib.parse import urlparse
 
 
 class SlackOAuthConfig:
     """
     Centralized OAuth configuration management for Slack.
 
-    Note: User token storage has been moved to auth/session_store.py
-    for secure multi-user session management.
+    Uses OAuth 2.1 proxy authorization server pattern where this MCP server
+    acts as the authorization server for MCP clients, proxying to Slack.
     """
 
     def __init__(self):
         # Base server configuration
-        self.base_uri = os.getenv("SLACK_MCP_BASE_URI", "http://localhost")
+        self.base_uri = os.getenv("SLACK_MCP_BASE_URI", "http://localhost").rstrip("/")
         self.port = int(os.getenv("SLACK_MCP_PORT", "8001"))
-        # Determine base URL (with port if not already specified in base_uri)
+        # Determine base URL (with port if not already specified in base_uri).
+        # Only append port for non-standard schemes (e.g. http://localhost needs :8001,
+        # but https://slack-mcp.internal.duolingo.com should NOT get :8001 appended).
         parsed = urlparse(self.base_uri)
-        self.base_url = self.base_uri if parsed.port else f"{self.base_uri}:{self.port}"
+        if parsed.port:
+            # Port already explicit in the URI
+            self.base_url = self.base_uri
+        elif (parsed.scheme == "https" and self.port == 443) or (
+            parsed.scheme == "http" and self.port == 80
+        ):
+            # Default port for the scheme — don't append
+            self.base_url = self.base_uri
+        else:
+            # Local dev: http://localhost needs the port
+            self.base_url = f"{self.base_uri}:{self.port}"
 
         # External URL for reverse proxy scenarios
-        self.external_url = os.getenv("SLACK_EXTERNAL_URL")
+        raw_external = os.getenv("SLACK_EXTERNAL_URL")
+        self.external_url = raw_external.rstrip("/") if raw_external else None
 
         # OAuth client configuration
         self.client_id = os.getenv("SLACK_CLIENT_ID")
@@ -45,58 +59,38 @@ class SlackOAuthConfig:
             "search:read",
         ]
 
-        # Redirect URI configuration
-        self.redirect_uri = self._get_redirect_uri()
-
-    def _get_redirect_uri(self) -> str:
-        """Get the OAuth redirect URI.
-
-        Uses SLACK_EXTERNAL_URL for ngrok/reverse proxy scenarios,
-        falls back to base_url for local development.
-        """
-        # Use external URL if available (for ngrok/reverse proxy)
-        base = self.external_url if self.external_url else self.base_url
-        return f"{base}/oauth2callback"
-
     def is_configured(self) -> bool:
         """Check if OAuth is properly configured."""
         return bool(self.client_id and self.client_secret)
 
-    def get_authorization_url(self, state: str = None) -> str:
-        """Get the Slack OAuth authorization URL using user_scope.
+    def get_oauth_base_url(self) -> str:
+        """Get OAuth base URL for constructing OAuth endpoints.
 
-        Slack returns a user token (xoxp-...) in authed_user.access_token only
-        when scopes are passed via the user_scope parameter.
-
-        Args:
-            state: Optional state parameter to pass through OAuth flow (e.g., session ID)
+        Uses SLACK_EXTERNAL_URL if set (for reverse proxy scenarios),
+        otherwise falls back to constructed base_url with port.
         """
-        user_scopes = ",".join(self.scopes)
-        url = (
-            f"https://slack.com/oauth/v2/authorize"
-            f"?client_id={quote(self.client_id, safe='')}"
-            f"&user_scope={quote(user_scopes, safe='')}"
-            f"&redirect_uri={quote(self.redirect_uri, safe='')}"
-        )
-        if state:
-            url += f"&state={quote(state, safe='')}"
-        return url
+        if self.external_url:
+            return self.external_url
+        return self.base_url
+
+    def get_slack_callback_url(self) -> str:
+        """Get the Slack OAuth callback URL for this server.
+
+        In OAuth 2.1 proxy mode, the MCP server's /oauth2callback endpoint
+        receives the callback from Slack after user authorization.
+        """
+        return f"{self.get_oauth_base_url()}/oauth2callback"
 
 
-# Global configuration instance
+# Global configuration instance with thread-safe access
 _oauth_config = None
+_oauth_config_lock = RLock()
 
 
 def get_oauth_config() -> SlackOAuthConfig:
-    """Get the global OAuth configuration instance."""
+    """Get the global OAuth configuration instance (thread-safe singleton)."""
     global _oauth_config
-    if _oauth_config is None:
-        _oauth_config = SlackOAuthConfig()
-    return _oauth_config
-
-
-def reload_oauth_config() -> SlackOAuthConfig:
-    """Reload the OAuth configuration from environment variables."""
-    global _oauth_config
-    _oauth_config = SlackOAuthConfig()
-    return _oauth_config
+    with _oauth_config_lock:
+        if _oauth_config is None:
+            _oauth_config = SlackOAuthConfig()
+        return _oauth_config

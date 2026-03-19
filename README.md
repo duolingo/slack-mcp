@@ -1,6 +1,6 @@
 # Slack MCP Server
 
-A read-only MCP (Model Context Protocol) server for Slack with OAuth authentication and multi-user session support.
+A read-only MCP (Model Context Protocol) server for Slack with OAuth 2.1 authentication.
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -16,7 +16,6 @@ https://github.com/user-attachments/assets/211bd428-209f-461a-b9a1-9cc85fd7c438
 - `slack_search_messages` - Advanced message search with filters
 - `slack_get_users` - List workspace users or get specific profiles
 - `slack_get_channels` - List channels or get detailed info
-- `slack_get_oauth_url` - Generate OAuth authorization URL
 
 ## Quick Start
 
@@ -83,7 +82,7 @@ Add to your MCP client configuration (e.g. ~/.cursor/mcp.json for Cursor):
 
 ### 7. Authenticate
 
-Call `slack_get_oauth_url()` MCP tool to get the authorization URL, visit it in your browser, and approve access the first time you use the MCP server.
+Authentication happens automatically via OAuth 2.1 when your MCP client first connects. Your client will open a browser window for Slack authorization — approve access and you're ready to go.
 
 ## Deployment
 
