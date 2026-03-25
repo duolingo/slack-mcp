@@ -63,6 +63,9 @@ def _extract_block_text(blocks: list) -> str:
             text_obj = block.get("text", {})
             if isinstance(text_obj, dict) and text_obj.get("text"):
                 parts.append(text_obj["text"])
+            for field in block.get("fields", []):
+                if isinstance(field, dict) and field.get("text"):
+                    parts.append(field["text"])
         elif block_type == "header":
             text_obj = block.get("text", {})
             if isinstance(text_obj, dict) and text_obj.get("text"):
@@ -308,24 +311,7 @@ def _get_authenticated_client():
     client, user_id = _get_oauth21_client()
     if client and user_id:
         return client, user_id, None
-    return None, None, {"ok": False, "error": "Not authenticated. Please authenticate via the /mcp menu (Slack MCP → Authenticate), then retry."}
-
-
-def check_auth() -> dict:
-    """
-    Check if the current session has valid Slack authentication.
-
-    Returns:
-        Dictionary with authentication status
-    """
-    client, user_id = _get_oauth21_client()
-    if client and user_id:
-        return {"ok": True, "authenticated": True, "user_id": user_id}
-    return {
-        "ok": True,
-        "authenticated": False,
-        "error": "Not authenticated. Please authenticate via the /mcp menu (Slack MCP → Authenticate).",
-    }
+    return None, None, {"ok": False, "error": "Not authenticated. Complete the OAuth flow first."}
 
 
 def _resolve_channel_name(client, channel_name: str) -> Optional[str]:
