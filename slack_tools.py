@@ -39,10 +39,45 @@ def _compact_attachment(a: dict) -> dict:
     return ca
 
 
+def _extract_block_text(blocks: list) -> str:
+    """Extract plain text from Slack Block Kit blocks.
+
+    When a message uses Block Kit, the top-level `text` field is often empty
+    and all content lives in `blocks`. This extracts a readable text fallback.
+    """
+    parts = []
+    for block in blocks:
+        block_type = block.get("type", "")
+        if block_type == "rich_text":
+            for element in block.get("elements", []):
+                for item in element.get("elements", []):
+                    if item.get("type") == "text":
+                        parts.append(item.get("text", ""))
+                    elif item.get("type") == "link":
+                        parts.append(item.get("url", ""))
+                    elif item.get("type") == "user":
+                        parts.append(f"<@{item.get('user_id', '')}>")
+                    elif item.get("type") == "channel":
+                        parts.append(f"<#{item.get('channel_id', '')}>")
+        elif block_type == "section":
+            text_obj = block.get("text", {})
+            if isinstance(text_obj, dict) and text_obj.get("text"):
+                parts.append(text_obj["text"])
+        elif block_type == "header":
+            text_obj = block.get("text", {})
+            if isinstance(text_obj, dict) and text_obj.get("text"):
+                parts.append(text_obj["text"])
+    return "\n".join(parts)
+
+
 def _compact_message(msg: dict) -> dict:
     """Strip a Slack message to LLM-essential fields."""
+    text = msg.get("text", "")
+    # When text is empty but blocks carry the content, extract a fallback
+    if not text.strip() and msg.get("blocks"):
+        text = _extract_block_text(msg["blocks"])
     result = {
-        "text": msg.get("text", ""),
+        "text": text,
         "user": msg.get("user", msg.get("bot_id", "")),
         "ts": msg.get("ts", ""),
     }
