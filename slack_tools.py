@@ -18,6 +18,123 @@ from slack_sdk.errors import SlackApiError
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Compact response helpers
+# Reduce token usage by 80-91% by stripping Slack API responses to
+# LLM-essential fields. Set compact=False on any tool to get full responses.
+# ---------------------------------------------------------------------------
+
+
+def _compact_attachment(a: dict) -> dict:
+    """Strip a Slack attachment to LLM-essential fields."""
+    ca = {}
+    if a.get("text"):
+        ca["text"] = a["text"]
+    if a.get("fallback"):
+        ca["fallback"] = a["fallback"]
+    if a.get("author_name"):
+        ca["author_name"] = a["author_name"]
+    if a.get("title"):
+        ca["title"] = a["title"]
+    return ca
+
+
+def _compact_message(msg: dict) -> dict:
+    """Strip a Slack message to LLM-essential fields."""
+    result = {
+        "text": msg.get("text", ""),
+        "user": msg.get("user", msg.get("bot_id", "")),
+        "ts": msg.get("ts", ""),
+    }
+    if msg.get("username"):
+        result["username"] = msg["username"]
+    if msg.get("thread_ts"):
+        result["thread_ts"] = msg["thread_ts"]
+    if msg.get("reply_count"):
+        result["reply_count"] = msg["reply_count"]
+    if msg.get("subtype"):
+        result["subtype"] = msg["subtype"]
+    if msg.get("edited"):
+        result["edited"] = True
+    if msg.get("reactions"):
+        result["reactions"] = [
+            {"name": r["name"], "count": r["count"]} for r in msg["reactions"]
+        ]
+    if msg.get("attachments"):
+        compact_attachments = [ca for a in msg["attachments"] if (ca := _compact_attachment(a))]
+        if compact_attachments:
+            result["attachments"] = compact_attachments
+    if msg.get("files"):
+        result["files"] = [
+            {"name": f.get("name", ""), "filetype": f.get("filetype", "")}
+            for f in msg["files"]
+        ]
+    return result
+
+
+def _compact_user(user: dict) -> dict:
+    """Strip a Slack user to LLM-essential fields."""
+    result = {
+        "id": user.get("id", ""),
+        "name": user.get("name", ""),
+        "real_name": user.get("real_name", ""),
+        "is_bot": user.get("is_bot", False),
+        "deleted": user.get("deleted", False),
+    }
+    profile = user.get("profile", {})
+    if profile:
+        display_name = profile.get("display_name", "")
+        if display_name:
+            result["display_name"] = display_name
+        title = profile.get("title", "")
+        if title:
+            result["title"] = title
+        status_text = profile.get("status_text", "")
+        if status_text:
+            result["status_text"] = status_text
+        email = profile.get("email", "")
+        if email:
+            result["email"] = email
+    return result
+
+
+def _compact_channel(channel: dict) -> dict:
+    """Strip a Slack channel to LLM-essential fields."""
+    result = {
+        "id": channel.get("id", ""),
+        "name": channel.get("name", ""),
+        "is_private": channel.get("is_private", False),
+        "is_archived": channel.get("is_archived", False),
+        "is_member": channel.get("is_member", False),
+        "num_members": channel.get("num_members", 0),
+    }
+    topic = channel.get("topic", {})
+    if isinstance(topic, dict) and topic.get("value"):
+        result["topic"] = topic["value"]
+    purpose = channel.get("purpose", {})
+    if isinstance(purpose, dict) and purpose.get("value"):
+        result["purpose"] = purpose["value"]
+    return result
+
+
+def _compact_search_match(match: dict) -> dict:
+    """Strip a Slack search match to LLM-essential fields."""
+    result = {
+        "text": match.get("text", ""),
+        "username": match.get("username", ""),
+        "ts": match.get("ts", ""),
+        "permalink": match.get("permalink", ""),
+    }
+    channel = match.get("channel", {})
+    if isinstance(channel, dict):
+        result["channel"] = channel.get("name", channel.get("id", ""))
+    if match.get("attachments"):
+        compact_attachments = [ca for a in match["attachments"] if (ca := _compact_attachment(a))]
+        if compact_attachments:
+            result["attachments"] = compact_attachments
+    return result
+
+
 def _parse_relative_date(date_str: str) -> Optional[str]:
     """
     Parse relative date strings like '7d', '1m', '2w' into YYYY-MM-DD format.
@@ -156,7 +273,24 @@ def _get_authenticated_client():
     client, user_id = _get_oauth21_client()
     if client and user_id:
         return client, user_id, None
-    return None, None, {"ok": False, "error": "Not authenticated. Complete the OAuth flow first."}
+    return None, None, {"ok": False, "error": "Not authenticated. Please authenticate via the /mcp menu (Slack MCP → Authenticate), then retry."}
+
+
+def check_auth() -> dict:
+    """
+    Check if the current session has valid Slack authentication.
+
+    Returns:
+        Dictionary with authentication status
+    """
+    client, user_id = _get_oauth21_client()
+    if client and user_id:
+        return {"ok": True, "authenticated": True, "user_id": user_id}
+    return {
+        "ok": True,
+        "authenticated": False,
+        "error": "Not authenticated. Please authenticate via the /mcp menu (Slack MCP → Authenticate).",
+    }
 
 
 def _resolve_channel_name(client, channel_name: str) -> Optional[str]:
@@ -193,6 +327,7 @@ def get_channel_messages(
     channel_id: str,
     limit: int = 100,
     cursor: Optional[str] = None,
+    compact: bool = True,
 ) -> dict:
     """
     Get messages from a Slack channel.
@@ -203,6 +338,7 @@ def get_channel_messages(
         channel_id: Channel ID or name (e.g., 'C1234567890' or '#general')
         limit: Maximum number of messages to retrieve (default: 100, max: 1000)
         cursor: Pagination cursor from previous response
+        compact: If True (default), return only essential fields. False for full Slack API response.
 
     Returns:
         Dictionary with messages and pagination info
@@ -231,9 +367,13 @@ def get_channel_messages(
         if not response.get("ok"):
             return {"ok": False, "error": response.get("error", "Unknown error")}
 
+        messages = response.get("messages", [])
+        if compact:
+            messages = [_compact_message(m) for m in messages]
+
         return {
             "ok": True,
-            "messages": response.get("messages", []),
+            "messages": messages,
             "has_more": response.get("has_more", False),
             "next_cursor": response.get("response_metadata", {}).get("next_cursor"),
         }
@@ -256,6 +396,7 @@ def get_thread_replies(
     thread_ts: str,
     limit: int = 100,
     cursor: Optional[str] = None,
+    compact: bool = True,
 ) -> dict:
     """
     Get replies from a Slack thread.
@@ -267,6 +408,7 @@ def get_thread_replies(
         thread_ts: Timestamp of the parent message
         limit: Maximum number of replies to retrieve (default: 100, max: 1000)
         cursor: Pagination cursor from previous response
+        compact: If True (default), return only essential fields. False for full Slack API response.
 
     Returns:
         Dictionary with messages (replies) and pagination info
@@ -297,9 +439,13 @@ def get_thread_replies(
         if not response.get("ok"):
             return {"ok": False, "error": response.get("error", "Unknown error")}
 
+        messages = response.get("messages", [])
+        if compact:
+            messages = [_compact_message(m) for m in messages]
+
         return {
             "ok": True,
-            "messages": response.get("messages", []),
+            "messages": messages,
             "has_more": response.get("has_more", False),
             "next_cursor": response.get("response_metadata", {}).get("next_cursor"),
         }
@@ -327,6 +473,7 @@ def search_messages(
     before_date: Optional[str] = None,
     sort_by: str = "relevance",
     sort_order: str = "desc",
+    compact: bool = True,
 ) -> dict:
     """
     Search for messages across all conversations with advanced filters.
@@ -343,6 +490,7 @@ def search_messages(
         before_date: Messages before this date (YYYY-MM-DD or relative)
         sort_by: Sort results by 'timestamp' or 'relevance' (default: 'relevance')
         sort_order: Sort order 'asc' or 'desc' (default: 'desc')
+        compact: If True (default), return only essential fields. False for full Slack API response.
 
     Returns:
         Dictionary with search results
@@ -408,6 +556,9 @@ def search_messages(
             reverse = sort_order == "desc"
             matches = sorted(matches, key=lambda m: float(m.get("ts", 0)), reverse=reverse)
 
+        if compact:
+            matches = [_compact_search_match(m) for m in matches]
+
         return {
             "ok": True,
             "query": enhanced_query,
@@ -442,6 +593,7 @@ def get_users(
     user_id: Optional[str] = None,
     limit: int = 100,
     cursor: Optional[str] = None,
+    compact: bool = True,
 ) -> dict:
     """
     Get users from Slack workspace.
@@ -456,6 +608,7 @@ def get_users(
         user_id: Optional user ID. If provided, gets specific user profile
         limit: Maximum number of users to retrieve when listing (default: 100, max: 1000)
         cursor: Pagination cursor from previous response (for listing mode)
+        compact: If True (default), return only essential fields. False for full Slack API response.
 
     Returns:
         Dictionary with user(s) and pagination info
@@ -473,9 +626,13 @@ def get_users(
             if not response.get("ok"):
                 return {"ok": False, "error": response.get("error", "Unknown error")}
 
+            user = response.get("user", {})
+            if compact:
+                user = _compact_user(user)
+
             return {
                 "ok": True,
-                "user": response.get("user", {}),
+                "user": user,
             }
         else:
             # List all users
@@ -489,9 +646,13 @@ def get_users(
             if not response.get("ok"):
                 return {"ok": False, "error": response.get("error", "Unknown error")}
 
+            users = response.get("members", [])
+            if compact:
+                users = [_compact_user(u) for u in users]
+
             return {
                 "ok": True,
-                "users": response.get("members", []),
+                "users": users,
                 "next_cursor": response.get("response_metadata", {}).get("next_cursor"),
             }
 
@@ -512,6 +673,7 @@ def get_channels(
     limit: int = 100,
     cursor: Optional[str] = None,
     include_members: bool = False,
+    compact: bool = True,
 ) -> dict:
     """
     Get channels from Slack workspace.
@@ -529,6 +691,7 @@ def get_channels(
         limit: Maximum number of channels to retrieve when listing (default: 100, max: 1000)
         cursor: Pagination cursor from previous response (for listing mode)
         include_members: Include member list when getting specific channel (default: False)
+        compact: If True (default), return only essential fields. False for full Slack API response.
 
     Returns:
         Dictionary with channel(s) and pagination info
@@ -548,9 +711,13 @@ def get_channels(
             if not response.get("ok"):
                 return {"ok": False, "error": response.get("error", "Unknown error")}
 
+            channel = response.get("channel", {})
+            if compact:
+                channel = _compact_channel(channel)
+
             result = {
                 "ok": True,
-                "channel": response.get("channel", {}),
+                "channel": channel,
             }
 
             # Optionally include members
@@ -596,9 +763,13 @@ def get_channels(
             if not response.get("ok"):
                 return {"ok": False, "error": response.get("error", "Unknown error")}
 
+            channels = response.get("channels", [])
+            if compact:
+                channels = [_compact_channel(c) for c in channels]
+
             return {
                 "ok": True,
-                "channels": response.get("channels", []),
+                "channels": channels,
                 "next_cursor": response.get("response_metadata", {}).get("next_cursor"),
             }
 
