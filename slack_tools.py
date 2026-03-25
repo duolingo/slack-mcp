@@ -558,12 +558,12 @@ def search_messages(
             f"search_messages called by user {user_id} with enhanced query: {enhanced_query}"
         )
 
-        # Slack API doesn't support sort_by/sort_order parameters, so we apply
-        # client-side sorting to the current page of results only
         response = client.search_messages(
             query=enhanced_query,
             count=min(count, 100),
             page=page,
+            sort=sort_by if sort_by == "timestamp" else "score",
+            sort_dir=sort_order,
         )
 
         if not response.get("ok"):
@@ -571,11 +571,6 @@ def search_messages(
 
         messages_data = response.get("messages", {})
         matches = messages_data.get("matches", [])
-
-        # Apply client-side sorting if requested and different from default
-        if sort_by == "timestamp" and matches:
-            reverse = sort_order == "desc"
-            matches = sorted(matches, key=lambda m: float(m.get("ts", 0)), reverse=reverse)
 
         if compact:
             matches = [_compact_search_match(m) for m in matches]
