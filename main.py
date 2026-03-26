@@ -95,6 +95,7 @@ def slack_get_channel_messages(
     channel_id: str,
     limit: int = 100,
     cursor: str = None,
+    compact: bool = True,
 ) -> dict:
     """
     Get messages from a Slack channel.
@@ -106,11 +107,12 @@ def slack_get_channel_messages(
         channel_id: Channel ID or name (e.g., 'C1234567890' or '#general')
         limit: Maximum number of messages to retrieve (default: 100, max: 1000)
         cursor: Pagination cursor from previous response (optional)
+        compact: If True (default), returns only essential fields. Set to False for full Slack API response.
 
     Returns:
         Dictionary with messages and pagination info
     """
-    return slack_tools.get_channel_messages(channel_id, limit, cursor)
+    return slack_tools.get_channel_messages(channel_id, limit, cursor, compact)
 
 
 @server.tool()
@@ -119,6 +121,7 @@ def slack_get_thread_replies(
     thread_ts: str,
     limit: int = 100,
     cursor: str = None,
+    compact: bool = True,
 ) -> dict:
     """
     Get replies from a Slack thread.
@@ -131,11 +134,12 @@ def slack_get_thread_replies(
         thread_ts: Timestamp of the parent message (e.g., '1234567890.123456')
         limit: Maximum number of replies to retrieve (default: 100, max: 1000)
         cursor: Pagination cursor from previous response (optional)
+        compact: If True (default), returns only essential fields. Set to False for full Slack API response.
 
     Returns:
         Dictionary with thread messages and pagination info
     """
-    return slack_tools.get_thread_replies(channel_id, thread_ts, limit, cursor)
+    return slack_tools.get_thread_replies(channel_id, thread_ts, limit, cursor, compact)
 
 
 @server.tool()
@@ -149,6 +153,7 @@ def slack_search_messages(
     before_date: str = None,
     sort_by: str = "relevance",
     sort_order: str = "desc",
+    compact: bool = True,
 ) -> dict:
     """
     Search for messages across all Slack conversations with advanced filters.
@@ -185,6 +190,7 @@ def slack_search_messages(
         before_date=before_date,
         sort_by=sort_by,
         sort_order=sort_order,
+        compact=compact,
     )
 
 
@@ -193,6 +199,7 @@ def slack_get_users(
     user_id: str = None,
     limit: int = 100,
     cursor: str = None,
+    compact: bool = True,
 ) -> dict:
     """
     Get users from Slack workspace.
@@ -208,13 +215,14 @@ def slack_get_users(
         user_id: Optional user ID. If provided, gets specific user profile
         limit: Maximum number of users to retrieve when listing (default: 100, max: 1000)
         cursor: Pagination cursor from previous response (for listing mode)
+        compact: If True (default), returns only essential fields. Set to False for full Slack API response.
 
     Returns:
         Dictionary with user(s) and pagination info
         - List mode: {"ok": True, "users": [...], "next_cursor": "..."}
         - Get mode: {"ok": True, "user": {...}}
     """
-    return slack_tools.get_users(user_id, limit, cursor)
+    return slack_tools.get_users(user_id, limit, cursor, compact)
 
 
 @server.tool()
@@ -224,6 +232,7 @@ def slack_get_channels(
     limit: int = 100,
     cursor: str = None,
     include_members: bool = False,
+    compact: bool = True,
 ) -> dict:
     """
     Get channels from Slack workspace.
@@ -242,13 +251,14 @@ def slack_get_channels(
         limit: Maximum number of channels to retrieve when listing (default: 100, max: 1000)
         cursor: Pagination cursor from previous response (for listing mode)
         include_members: Include member list when getting specific channel (default: False)
+        compact: If True (default), returns only essential fields. Set to False for full Slack API response.
 
     Returns:
         Dictionary with channel(s) and pagination info
         - List mode: {"ok": True, "channels": [...], "next_cursor": "..."}
         - Get mode: {"ok": True, "channel": {...}, "members": [...]}
     """
-    return slack_tools.get_channels(channel_id, types, limit, cursor, include_members)
+    return slack_tools.get_channels(channel_id, types, limit, cursor, include_members, compact)
 
 
 # Add health check endpoint for ECS
