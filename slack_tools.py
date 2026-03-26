@@ -157,12 +157,19 @@ def _compact_channel(channel: dict) -> dict:
 
 def _compact_search_match(match: dict) -> dict:
     """Strip a Slack search match to LLM-essential fields."""
+    text = match.get("text", "")
+    # Block Kit fallback — same as _compact_message
+    if not text.strip() and match.get("blocks"):
+        text = _extract_block_text(match["blocks"])
     result = {
-        "text": match.get("text", ""),
+        "text": text,
+        "user": match.get("user", match.get("username", "")),
         "username": match.get("username", ""),
         "ts": match.get("ts", ""),
         "permalink": match.get("permalink", ""),
     }
+    if match.get("thread_ts"):
+        result["thread_ts"] = match["thread_ts"]
     channel = match.get("channel", {})
     if isinstance(channel, dict):
         result["channel"] = channel.get("name", channel.get("id", ""))
