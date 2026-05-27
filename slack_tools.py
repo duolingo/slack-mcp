@@ -115,7 +115,7 @@ def _compact_user(user: dict) -> dict:
         "is_bot": user.get("is_bot", False),
         "deleted": user.get("deleted", False),
     }
-    profile = user.get("profile", {})
+    profile = user.get("profile") or {}
     for field in ("display_name", "title", "status_text", "email"):
         if val := profile.get(field, ""):
             result[field] = val

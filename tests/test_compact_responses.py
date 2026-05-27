@@ -343,6 +343,13 @@ class TestCompactUser:
         assert result["id"] == "U1"
         assert "email" not in result
 
+    def test_handles_null_profile(self):
+        # Slack API may return "profile": null — user.get("profile", {}) returns
+        # None in that case (the default only applies when the key is missing).
+        result = _compact_user({"id": "U1", "name": "alice", "profile": None})
+        assert result["id"] == "U1"
+        assert "email" not in result
+
 
 class TestCompactChannel:
     def test_keeps_core_fields(self):
