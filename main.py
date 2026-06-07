@@ -261,6 +261,54 @@ def slack_get_channels(
     return slack_tools.get_channels(channel_id, types, limit, cursor, include_members, compact)
 
 
+@server.tool()
+def slack_send_message(
+    channel: str,
+    text: str,
+) -> dict:
+    """
+    Send a message to a Slack channel.
+
+    Only available when the X-Writable-Channels header is configured on the MCP client.
+    The target channel must be in the allowlist.
+
+    Args:
+        channel: Channel name to send to (e.g., 'general' or '#general').
+            Must be in the X-Writable-Channels allowlist.
+        text: Message text to send. Supports Slack mrkdwn formatting
+            (e.g., *bold*, _italic_, <url|link text>, <@user_id>).
+
+    Returns:
+        Dictionary with send result including message timestamp
+    """
+    return slack_tools.send_message(channel, text)
+
+
+@server.tool()
+def slack_reply_in_thread(
+    channel: str,
+    thread_ts: str,
+    text: str,
+) -> dict:
+    """
+    Reply to a thread in a Slack channel.
+
+    Only available when the X-Writable-Channels header is configured on the MCP client.
+    The target channel must be in the allowlist.
+
+    Args:
+        channel: Channel name where the thread exists (e.g., 'general' or '#general').
+            Must be in the X-Writable-Channels allowlist.
+        thread_ts: Timestamp of the parent message to reply to
+            (e.g., '1234567890.123456'). Get this from the 'ts' field of a message.
+        text: Reply text. Supports Slack mrkdwn formatting.
+
+    Returns:
+        Dictionary with send result including message timestamp
+    """
+    return slack_tools.reply_in_thread(channel, thread_ts, text)
+
+
 # Add health check endpoint for ECS
 @server.custom_route("/health", methods=["GET"])
 async def health_check(request: Request):
@@ -309,6 +357,8 @@ def main():
     safe_print("   🔍 slack_search_messages - Search messages")
     safe_print("   👤 slack_get_users - List users or get user profile")
     safe_print("   📢 slack_get_channels - List channels or get channel info")
+    safe_print("   ✏️  slack_send_message - Send a message (requires X-Writable-Channels header)")
+    safe_print("   ↩️  slack_reply_in_thread - Reply in a thread (requires X-Writable-Channels header)")
     safe_print("")
 
     if not config.is_configured():
