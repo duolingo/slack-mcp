@@ -8,10 +8,23 @@ to claims. This middleware extracts those claims into context state.
 
 import logging
 
-from fastmcp.server.dependencies import get_access_token
+from fastmcp.server.dependencies import get_access_token, get_http_request
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 
 logger = logging.getLogger(__name__)
+
+WRITABLE_CHANNELS_HEADER = "x-writable-channels"
+
+
+def _parse_writable_channels(header_value: str | None) -> list[str]:
+    """Parse a comma-separated channel allowlist header into normalized names."""
+    if not header_value:
+        return []
+    return [
+        name
+        for raw in header_value.split(",")
+        if (name := raw.strip().lstrip("#"))
+    ]
 
 
 class AuthInfoMiddleware(Middleware):
@@ -46,6 +59,14 @@ class AuthInfoMiddleware(Middleware):
             logger.debug("Authenticated Slack user %s via proxy OAuth", slack_user_id)
         else:
             logger.warning("Access token valid but missing slack_token/slack_user_id in claims")
+
+        try:
+            http_request = get_http_request()
+            raw_header = http_request.headers.get(WRITABLE_CHANNELS_HEADER)
+            if writable := _parse_writable_channels(raw_header):
+                context.fastmcp_context.set_state("writable_channels", writable)
+        except Exception:
+            pass
 
     async def on_call_tool(self, context: MiddlewareContext, call_next):
         """Extract auth info from token claims and set in context state."""
