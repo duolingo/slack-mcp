@@ -57,6 +57,7 @@ class SlackOAuthConfig:
             "users:read",
             "users:read.email",
             "search:read",
+            "chat:write",
         ]
 
     def is_configured(self) -> bool:
