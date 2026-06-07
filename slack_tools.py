@@ -203,7 +203,7 @@ def send_message(channel: str, text: str) -> dict:
             "channel": response["channel"],
         }
     except SlackApiError as e:
-        logger.error(
+        logger.warning(
             "send_message failed",
             extra={"user_id": user_id, "channel": normalized, "error": e.response["error"]},
         )
@@ -237,7 +237,7 @@ def reply_in_thread(channel: str, thread_ts: str, text: str) -> dict:
             "channel": response["channel"],
         }
     except SlackApiError as e:
-        logger.error(
+        logger.warning(
             "reply_in_thread failed",
             extra={"user_id": user_id, "channel": normalized, "error": e.response["error"]},
         )
