@@ -166,6 +166,84 @@ def _compact_search_match(match: dict) -> dict:
     return result
 
 
+def _validate_writable_channel(
+    channel: str, writable_channels: list[str] | None
+) -> tuple[bool, str | None]:
+    """Check whether *channel* is in the writable allowlist."""
+    if not writable_channels:
+        return False, "No writable channels configured. Set the X-Writable-Channels header."
+    normalized = channel.lstrip("#")
+    if normalized in writable_channels:
+        return True, None
+    return False, (
+        f"Channel '{normalized}' is not in the writable allowlist. "
+        f"Allowed channels: {', '.join(writable_channels)}"
+    )
+
+
+def send_message(channel: str, text: str) -> dict:
+    """Send a message to a Slack channel (must be in the writable allowlist)."""
+    client, user_id, error = _get_authenticated_client()
+    if error:
+        return error
+
+    ctx = get_context()
+    writable_channels = ctx.get_state("writable_channels")
+    ok, err = _validate_writable_channel(channel, writable_channels)
+    if not ok:
+        return {"ok": False, "error": err}
+
+    normalized = channel.lstrip("#")
+    try:
+        response = client.chat_postMessage(channel=normalized, text=text)
+        logger.info("send_message", extra={"user_id": user_id, "channel": normalized})
+        return {
+            "ok": True,
+            "ts": response["ts"],
+            "channel": response["channel"],
+        }
+    except SlackApiError as e:
+        logger.error(
+            "send_message failed",
+            extra={"user_id": user_id, "channel": normalized, "error": e.response["error"]},
+        )
+        return {"ok": False, "error": f"Slack API error: {e.response['error']}"}
+
+
+def reply_in_thread(channel: str, thread_ts: str, text: str) -> dict:
+    """Reply in a Slack thread (channel must be in the writable allowlist)."""
+    client, user_id, error = _get_authenticated_client()
+    if error:
+        return error
+
+    ctx = get_context()
+    writable_channels = ctx.get_state("writable_channels")
+    ok, err = _validate_writable_channel(channel, writable_channels)
+    if not ok:
+        return {"ok": False, "error": err}
+
+    normalized = channel.lstrip("#")
+    try:
+        response = client.chat_postMessage(
+            channel=normalized, text=text, thread_ts=thread_ts
+        )
+        logger.info(
+            "reply_in_thread",
+            extra={"user_id": user_id, "channel": normalized, "thread_ts": thread_ts},
+        )
+        return {
+            "ok": True,
+            "ts": response["ts"],
+            "channel": response["channel"],
+        }
+    except SlackApiError as e:
+        logger.error(
+            "reply_in_thread failed",
+            extra={"user_id": user_id, "channel": normalized, "error": e.response["error"]},
+        )
+        return {"ok": False, "error": f"Slack API error: {e.response['error']}"}
+
+
 def _parse_relative_date(date_str: str) -> Optional[str]:
     """
     Parse relative date strings like '7d', '1m', '2w' into YYYY-MM-DD format.
