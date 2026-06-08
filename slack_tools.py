@@ -181,7 +181,14 @@ def _validate_writable_channel(
     )
 
 
-_MCP_FOOTER_ATTACHMENT = [{"text": "", "footer": "(Sent using Slack MCP)"}]
+_MCP_FOOTER = {"type": "context", "elements": [{"type": "mrkdwn", "text": "(Sent using Slack MCP)"}]}
+
+
+def _build_blocks(text: str) -> list[dict]:
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+        _MCP_FOOTER,
+    ]
 
 
 def _get_permalink(client, channel_id: str, message_ts: str) -> str | None:
@@ -206,7 +213,7 @@ def send_message(channel: str, text: str) -> dict:
 
     normalized = channel.lstrip("#")
     try:
-        response = client.chat_postMessage(channel=normalized, text=text, attachments=_MCP_FOOTER_ATTACHMENT)
+        response = client.chat_postMessage(channel=normalized, text=text, blocks=_build_blocks(text))
         logger.info("send_message", extra={"user_id": user_id, "channel": normalized})
         result = {
             "ok": True,
@@ -239,7 +246,7 @@ def reply_in_thread(channel: str, thread_ts: str, text: str) -> dict:
     normalized = channel.lstrip("#")
     try:
         response = client.chat_postMessage(
-            channel=normalized, text=text, attachments=_MCP_FOOTER_ATTACHMENT, thread_ts=thread_ts
+            channel=normalized, text=text, blocks=_build_blocks(text), thread_ts=thread_ts
         )
         logger.info(
             "reply_in_thread",

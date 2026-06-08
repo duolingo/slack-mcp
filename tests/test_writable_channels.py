@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 from slack_sdk.errors import SlackApiError
 
 from auth.auth_info_middleware import _parse_writable_channels
-from slack_tools import _MCP_FOOTER_ATTACHMENT, _validate_writable_channel, reply_in_thread, send_message
+from slack_tools import _build_blocks, _validate_writable_channel, reply_in_thread, send_message
 
 
 class TestParseWritableChannels:
@@ -107,7 +107,7 @@ class TestSendMessage:
         assert result["ts"] == "1234.5678"
         assert result["permalink"] == "https://workspace.slack.com/archives/C999/p12345678"
         mock_client.chat_postMessage.assert_called_once_with(
-            channel="random", text="hello", attachments=_MCP_FOOTER_ATTACHMENT
+            channel="random", text="hello", blocks=_build_blocks("hello")
         )
 
     @patch("slack_tools.get_context")
@@ -127,7 +127,7 @@ class TestSendMessage:
         result = send_message("#random", "hello")
         assert result["ok"] is True
         mock_client.chat_postMessage.assert_called_once_with(
-            channel="random", text="hello", attachments=_MCP_FOOTER_ATTACHMENT
+            channel="random", text="hello", blocks=_build_blocks("hello")
         )
 
     @patch("slack_tools.get_context")
@@ -176,7 +176,7 @@ class TestReplyInThread:
         assert result["ts"] == "1234.9999"
         assert result["permalink"] == "https://workspace.slack.com/archives/C999/p12349999"
         mock_client.chat_postMessage.assert_called_once_with(
-            channel="random", text="reply text", attachments=_MCP_FOOTER_ATTACHMENT, thread_ts="1234.5678"
+            channel="random", text="reply text", blocks=_build_blocks("reply text"), thread_ts="1234.5678"
         )
 
     @patch("slack_tools.get_context")
