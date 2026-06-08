@@ -181,7 +181,7 @@ def _validate_writable_channel(
     )
 
 
-_MCP_FOOTER_ATTACHMENT = [{"footer": "(Sent using Slack MCP)"}]
+_MCP_FOOTER_ATTACHMENT = [{"text": "", "footer": "(Sent using Slack MCP)"}]
 
 
 def _get_permalink(client, channel_id: str, message_ts: str) -> str | None:
