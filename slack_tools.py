@@ -181,12 +181,17 @@ def _validate_writable_channel(
     )
 
 
-_MCP_FOOTER = {"type": "context", "elements": [{"type": "mrkdwn", "text": "Sent using Slack MCP"}]}
+_MCP_FOOTER = {"type": "context", "elements": [{"type": "mrkdwn", "text": "(Sent using Slack MCP)"}]}
 
 
 def _build_blocks(text: str) -> list[dict]:
     return [
-        {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+        {
+            "type": "rich_text",
+            "elements": [
+                {"type": "rich_text_section", "elements": [{"type": "text", "text": text}]},
+            ],
+        },
         _MCP_FOOTER,
     ]
 
