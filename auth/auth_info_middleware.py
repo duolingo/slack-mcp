@@ -64,10 +64,10 @@ class AuthInfoMiddleware(Middleware):
         try:
             http_request = get_http_request()
             raw_header = http_request.headers.get(WRITABLE_CHANNELS_HEADER)
-            if writable := _parse_writable_channels(raw_header):
-                context.fastmcp_context.set_state("writable_channels", writable)
+            writable = _parse_writable_channels(raw_header)
+            context.fastmcp_context.set_state("writable_channels", writable)
         except Exception:
-            pass
+            context.fastmcp_context.set_state("writable_channels", [])
 
     async def on_list_tools(self, context: MiddlewareContext, call_next):
         """Hide write tools when X-Writable-Channels header is absent."""
