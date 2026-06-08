@@ -10,6 +10,7 @@ import logging
 import os
 import sys
 from importlib import metadata
+from typing import Annotated
 
 import slack_tools
 from auth.oauth_config import get_oauth_config
@@ -90,96 +91,55 @@ def safe_print(text):
         print(text.encode("ascii", errors="replace").decode(), file=sys.stderr)
 
 
-@server.tool()
+@server.tool(
+    description="Retrieve messages from a Slack channel with pagination support. Accepts channel IDs or #names.",
+    annotations={"title": "Get Channel Messages", "readOnlyHint": True},
+)
 def slack_get_channel_messages(
-    channel_id: str,
-    limit: int = 100,
-    cursor: str = None,
-    compact: bool = True,
+    channel_id: Annotated[str, "Channel ID or name (e.g., 'C1234567890' or '#general')"],
+    limit: Annotated[int, "Maximum number of messages to retrieve (max 1000)"] = 100,
+    cursor: Annotated[str | None, "Pagination cursor from previous response"] = None,
+    compact: Annotated[bool, "If True, returns only essential fields"] = True,
 ) -> dict:
-    """
-    Get messages from a Slack channel.
-
-    Uses the authenticated user's credentials from the current session.
-    Authentication is handled automatically - no user_id required.
-
-    Args:
-        channel_id: Channel ID or name (e.g., 'C1234567890' or '#general')
-        limit: Maximum number of messages to retrieve (default: 100, max: 1000)
-        cursor: Pagination cursor from previous response (optional)
-        compact: If True (default), returns only essential fields. Set to False for full Slack API response.
-
-    Returns:
-        Dictionary with messages and pagination info
-    """
+    """Calls conversations_history with optional channel-name resolution."""
     return slack_tools.get_channel_messages(channel_id, limit, cursor, compact)
 
 
-@server.tool()
+@server.tool(
+    description="Get replies from a Slack thread. Accepts channel IDs or #names.",
+    annotations={"title": "Get Thread Replies", "readOnlyHint": True},
+)
 def slack_get_thread_replies(
-    channel_id: str,
-    thread_ts: str,
-    limit: int = 100,
-    cursor: str = None,
-    compact: bool = True,
+    channel_id: Annotated[str, "Channel ID or name where the thread exists"],
+    thread_ts: Annotated[str, "Timestamp of the parent message (e.g., '1234567890.123456')"],
+    limit: Annotated[int, "Maximum number of replies to retrieve (max 1000)"] = 100,
+    cursor: Annotated[str | None, "Pagination cursor from previous response"] = None,
+    compact: Annotated[bool, "If True, returns only essential fields"] = True,
 ) -> dict:
-    """
-    Get replies from a Slack thread.
-
-    Uses the authenticated user's credentials from the current session.
-    Authentication is handled automatically - no user_id required.
-
-    Args:
-        channel_id: Channel ID or name where the thread exists
-        thread_ts: Timestamp of the parent message (e.g., '1234567890.123456')
-        limit: Maximum number of replies to retrieve (default: 100, max: 1000)
-        cursor: Pagination cursor from previous response (optional)
-        compact: If True (default), returns only essential fields. Set to False for full Slack API response.
-
-    Returns:
-        Dictionary with thread messages and pagination info
-    """
+    """Calls conversations_replies with optional channel-name resolution."""
     return slack_tools.get_thread_replies(channel_id, thread_ts, limit, cursor, compact)
 
 
-@server.tool()
+@server.tool(
+    description=(
+        "Search for messages across all Slack conversations with advanced filters. "
+        "Supports date ranges (YYYY-MM-DD or relative like '7d', '1m'), user filters, and channel filters."
+    ),
+    annotations={"title": "Search Messages", "readOnlyHint": True},
+)
 def slack_search_messages(
-    query: str,
-    count: int = 20,
-    page: int = 1,
-    from_user: str = None,
-    in_channel: str = None,
-    after_date: str = None,
-    before_date: str = None,
-    sort_by: str = "relevance",
-    sort_order: str = "desc",
-    compact: bool = True,
+    query: Annotated[str, "Search query string (can be empty if using only filters)"],
+    count: Annotated[int, "Number of results per page (max 100)"] = 20,
+    page: Annotated[int, "Page number for pagination"] = 1,
+    from_user: Annotated[str | None, "Filter by user ID or username (e.g., 'U123ABC' or '@john')"] = None,
+    in_channel: Annotated[str | None, "Filter by channel ID or name (e.g., 'C123ABC' or '#general')"] = None,
+    after_date: Annotated[str | None, "Messages after this date (YYYY-MM-DD or relative like '7d', '1m')"] = None,
+    before_date: Annotated[str | None, "Messages before this date (YYYY-MM-DD or relative)"] = None,
+    sort_by: Annotated[str, "Sort by 'timestamp' or 'relevance'"] = "relevance",
+    sort_order: Annotated[str, "Sort order: 'asc' or 'desc'"] = "desc",
+    compact: Annotated[bool, "If True, returns only essential fields"] = True,
 ) -> dict:
-    """
-    Search for messages across all Slack conversations with advanced filters.
-
-    Uses the authenticated user's credentials from the current session.
-    Authentication is handled automatically - no user_id required.
-
-    Args:
-        query: Search query string (can be empty if using only filters)
-        count: Number of results per page (default: 20, max: 100)
-        page: Page number for pagination (default: 1)
-        from_user: Filter by user ID or username (e.g., 'U123ABC' or '@john')
-        in_channel: Filter by channel ID or name (e.g., 'C123ABC' or '#general')
-        after_date: Messages after this date (YYYY-MM-DD or relative like '7d', '1m')
-        before_date: Messages before this date (YYYY-MM-DD or relative)
-        sort_by: Sort results by 'timestamp' or 'relevance' (default: 'relevance')
-        sort_order: Sort order 'asc' or 'desc' (default: 'desc')
-
-    Returns:
-        Dictionary with search results and pagination info
-
-    Examples:
-        - Search in last 7 days: slack_search_messages("important", after_date="7d")
-        - Search from user in channel: slack_search_messages("meeting", from_user="@john", in_channel="#team")
-        - Date range: slack_search_messages("report", after_date="2025-01-01", before_date="2025-01-31")
-    """
+    """Builds enhanced query with filters and calls search_messages."""
     return slack_tools.search_messages(
         query=query,
         count=count,
@@ -194,118 +154,66 @@ def slack_search_messages(
     )
 
 
-@server.tool()
+@server.tool(
+    description="List workspace users or get a specific user's profile by ID.",
+    annotations={"title": "Get Users", "readOnlyHint": True},
+)
 def slack_get_users(
-    user_id: str = None,
-    limit: int = 100,
-    cursor: str = None,
-    compact: bool = True,
+    user_id: Annotated[str | None, "User ID to get a specific profile; omit to list all users"] = None,
+    limit: Annotated[int, "Maximum number of users when listing (max 1000)"] = 100,
+    cursor: Annotated[str | None, "Pagination cursor from previous response"] = None,
+    compact: Annotated[bool, "If True, returns only essential fields"] = True,
 ) -> dict:
-    """
-    Get users from Slack workspace.
-
-    This is a dual-mode tool:
-    - Without user_id: Lists all users in the workspace with pagination
-    - With user_id: Gets detailed profile for a specific user
-
-    Uses the authenticated user's credentials from the current session.
-    Authentication is handled automatically - no user_id required.
-
-    Args:
-        user_id: Optional user ID. If provided, gets specific user profile
-        limit: Maximum number of users to retrieve when listing (default: 100, max: 1000)
-        cursor: Pagination cursor from previous response (for listing mode)
-        compact: If True (default), returns only essential fields. Set to False for full Slack API response.
-
-    Returns:
-        Dictionary with user(s) and pagination info
-        - List mode: {"ok": True, "users": [...], "next_cursor": "..."}
-        - Get mode: {"ok": True, "user": {...}}
-    """
+    """Calls users_info (single) or users_list (all) depending on user_id."""
     return slack_tools.get_users(user_id, limit, cursor, compact)
 
 
-@server.tool()
+@server.tool(
+    description="List channels or get detailed info for a specific channel. Supports filtering by type (public, private, DM, group DM).",
+    annotations={"title": "Get Channels", "readOnlyHint": True},
+)
 def slack_get_channels(
-    channel_id: str = None,
-    types: str = None,
-    limit: int = 100,
-    cursor: str = None,
-    include_members: bool = False,
-    compact: bool = True,
+    channel_id: Annotated[str | None, "Channel ID to get specific channel info; omit to list channels"] = None,
+    types: Annotated[str | None, "Channel types to filter: 'public_channel,private_channel', 'im,mpim', etc."] = None,
+    limit: Annotated[int, "Maximum number of channels when listing (max 1000)"] = 100,
+    cursor: Annotated[str | None, "Pagination cursor from previous response"] = None,
+    include_members: Annotated[bool, "Include member list when getting a specific channel"] = False,
+    compact: Annotated[bool, "If True, returns only essential fields"] = True,
 ) -> dict:
-    """
-    Get channels from Slack workspace.
-
-    This is a dual-mode tool:
-    - Without channel_id: Lists channels with optional type filter (defaults to public channels only)
-    - With channel_id: Gets detailed info for a specific channel, optionally with members
-
-    Uses the authenticated user's credentials from the current session.
-    Authentication is handled automatically - no user_id required.
-
-    Args:
-        channel_id: Optional channel ID. If provided, gets specific channel info
-        types: Filter by channel types when listing. Defaults to "public_channel" if not specified.
-               Examples: "public_channel,private_channel", "im,mpim" (DMs and group DMs)
-        limit: Maximum number of channels to retrieve when listing (default: 100, max: 1000)
-        cursor: Pagination cursor from previous response (for listing mode)
-        include_members: Include member list when getting specific channel (default: False)
-        compact: If True (default), returns only essential fields. Set to False for full Slack API response.
-
-    Returns:
-        Dictionary with channel(s) and pagination info
-        - List mode: {"ok": True, "channels": [...], "next_cursor": "..."}
-        - Get mode: {"ok": True, "channel": {...}, "members": [...]}
-    """
+    """Calls conversations_info (single) or conversations_list (all) depending on channel_id."""
     return slack_tools.get_channels(channel_id, types, limit, cursor, include_members, compact)
 
 
-@server.tool()
+@server.tool(
+    description=(
+        "Send a message to a Slack channel. "
+        "Only available when X-Writable-Channels header is configured. Target channel must be in the allowlist. "
+        "Accepts channel names or IDs."
+    ),
+    annotations={"title": "Send Message", "readOnlyHint": False},
+)
 def slack_send_message(
-    channel: str,
-    text: str,
+    channel: Annotated[str, "Channel name or ID to send to (e.g., 'general', '#general', or 'C1234567890'). Must be in the allowlist."],
+    text: Annotated[str, "Message text. Supports Slack mrkdwn (*bold*, _italic_, <url|link text>, <@user_id>)."],
 ) -> dict:
-    """
-    Send a message to a Slack channel.
-
-    Only available when the X-Writable-Channels header is configured on the MCP client.
-    The target channel must be in the allowlist.
-
-    Args:
-        channel: Channel name to send to (e.g., 'general' or '#general').
-            Must be in the X-Writable-Channels allowlist.
-        text: Message text to send. Supports Slack mrkdwn formatting
-            (e.g., *bold*, _italic_, <url|link text>, <@user_id>).
-
-    Returns:
-        Dictionary with send result including message timestamp
-    """
+    """Validates channel against allowlist, then calls chat_postMessage with Block Kit footer."""
     return slack_tools.send_message(channel, text)
 
 
-@server.tool()
+@server.tool(
+    description=(
+        "Reply to a thread in a Slack channel. "
+        "Only available when X-Writable-Channels header is configured. Target channel must be in the allowlist. "
+        "Accepts channel names or IDs."
+    ),
+    annotations={"title": "Reply in Thread", "readOnlyHint": False},
+)
 def slack_reply_in_thread(
-    channel: str,
-    thread_ts: str,
-    text: str,
+    channel: Annotated[str, "Channel name or ID where the thread exists. Must be in the allowlist."],
+    thread_ts: Annotated[str, "Timestamp of the parent message to reply to (e.g., '1234567890.123456')"],
+    text: Annotated[str, "Reply text. Supports Slack mrkdwn formatting."],
 ) -> dict:
-    """
-    Reply to a thread in a Slack channel.
-
-    Only available when the X-Writable-Channels header is configured on the MCP client.
-    The target channel must be in the allowlist.
-
-    Args:
-        channel: Channel name where the thread exists (e.g., 'general' or '#general').
-            Must be in the X-Writable-Channels allowlist.
-        thread_ts: Timestamp of the parent message to reply to
-            (e.g., '1234567890.123456'). Get this from the 'ts' field of a message.
-        text: Reply text. Supports Slack mrkdwn formatting.
-
-    Returns:
-        Dictionary with send result including message timestamp
-    """
+    """Validates channel against allowlist, then calls chat_postMessage with thread_ts and Block Kit footer."""
     return slack_tools.reply_in_thread(channel, thread_ts, text)
 
 
