@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 from slack_sdk.errors import SlackApiError
 
 from auth.auth_info_middleware import _parse_writable_channels
-from slack_tools import _validate_writable_channel, reply_in_thread, send_message
+from slack_tools import _append_footer, _validate_writable_channel, reply_in_thread, send_message
 
 
 class TestParseWritableChannels:
@@ -93,6 +93,10 @@ class TestSendMessage:
             "ts": "1234.5678",
             "channel": "C999",
         }
+        mock_client.chat_getPermalink.return_value = {
+            "ok": True,
+            "permalink": "https://workspace.slack.com/archives/C999/p12345678",
+        }
         mock_auth.return_value = (mock_client, "U123", None)
         ctx = MagicMock()
         ctx.get_state.return_value = ["general"]
@@ -101,7 +105,10 @@ class TestSendMessage:
         result = send_message("general", "hello")
         assert result["ok"] is True
         assert result["ts"] == "1234.5678"
-        mock_client.chat_postMessage.assert_called_once_with(channel="general", text="hello")
+        assert result["permalink"] == "https://workspace.slack.com/archives/C999/p12345678"
+        mock_client.chat_postMessage.assert_called_once_with(
+            channel="general", text=_append_footer("hello")
+        )
 
     @patch("slack_tools.get_context")
     @patch("slack_tools._get_authenticated_client")
@@ -119,7 +126,9 @@ class TestSendMessage:
 
         result = send_message("#general", "hello")
         assert result["ok"] is True
-        mock_client.chat_postMessage.assert_called_once_with(channel="general", text="hello")
+        mock_client.chat_postMessage.assert_called_once_with(
+            channel="general", text=_append_footer("hello")
+        )
 
     @patch("slack_tools.get_context")
     @patch("slack_tools._get_authenticated_client")
@@ -153,6 +162,10 @@ class TestReplyInThread:
             "ts": "1234.9999",
             "channel": "C999",
         }
+        mock_client.chat_getPermalink.return_value = {
+            "ok": True,
+            "permalink": "https://workspace.slack.com/archives/C999/p12349999",
+        }
         mock_auth.return_value = (mock_client, "U123", None)
         ctx = MagicMock()
         ctx.get_state.return_value = ["general"]
@@ -161,8 +174,9 @@ class TestReplyInThread:
         result = reply_in_thread("general", "1234.5678", "reply text")
         assert result["ok"] is True
         assert result["ts"] == "1234.9999"
+        assert result["permalink"] == "https://workspace.slack.com/archives/C999/p12349999"
         mock_client.chat_postMessage.assert_called_once_with(
-            channel="general", text="reply text", thread_ts="1234.5678"
+            channel="general", text=_append_footer("reply text"), thread_ts="1234.5678"
         )
 
     @patch("slack_tools.get_context")

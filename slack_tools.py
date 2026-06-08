@@ -181,6 +181,18 @@ def _validate_writable_channel(
     )
 
 
+def _append_footer(text: str) -> str:
+    return f"{text}\n_(sent from Slack MCP)_"
+
+
+def _get_permalink(client, channel_id: str, message_ts: str) -> str | None:
+    try:
+        resp = client.chat_getPermalink(channel=channel_id, message_ts=message_ts)
+        return resp.get("permalink")
+    except SlackApiError:
+        return None
+
+
 def send_message(channel: str, text: str) -> dict:
     """Send a message to a Slack channel (must be in the writable allowlist)."""
     client, user_id, error = _get_authenticated_client()
@@ -195,13 +207,16 @@ def send_message(channel: str, text: str) -> dict:
 
     normalized = channel.lstrip("#")
     try:
-        response = client.chat_postMessage(channel=normalized, text=text)
+        response = client.chat_postMessage(channel=normalized, text=_append_footer(text))
         logger.info("send_message", extra={"user_id": user_id, "channel": normalized})
-        return {
+        result = {
             "ok": True,
             "ts": response["ts"],
             "channel": response["channel"],
         }
+        if permalink := _get_permalink(client, response["channel"], response["ts"]):
+            result["permalink"] = permalink
+        return result
     except SlackApiError as e:
         logger.warning(
             "send_message failed",
@@ -225,17 +240,20 @@ def reply_in_thread(channel: str, thread_ts: str, text: str) -> dict:
     normalized = channel.lstrip("#")
     try:
         response = client.chat_postMessage(
-            channel=normalized, text=text, thread_ts=thread_ts
+            channel=normalized, text=_append_footer(text), thread_ts=thread_ts
         )
         logger.info(
             "reply_in_thread",
             extra={"user_id": user_id, "channel": normalized, "thread_ts": thread_ts},
         )
-        return {
+        result = {
             "ok": True,
             "ts": response["ts"],
             "channel": response["channel"],
         }
+        if permalink := _get_permalink(client, response["channel"], response["ts"]):
+            result["permalink"] = permalink
+        return result
     except SlackApiError as e:
         logger.warning(
             "reply_in_thread failed",
