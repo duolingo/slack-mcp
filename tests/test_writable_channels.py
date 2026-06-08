@@ -196,8 +196,11 @@ class TestReplyInThread:
 
 
 class TestIsChannelId:
-    def test_recognizes_channel_id(self):
+    def test_recognizes_public_channel_id(self):
         assert _is_channel_id("C09KPE8EACW") is True
+
+    def test_recognizes_private_channel_id(self):
+        assert _is_channel_id("G01ABC123") is True
 
     def test_rejects_channel_name(self):
         assert _is_channel_id("random") is False

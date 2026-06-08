@@ -167,7 +167,7 @@ def _compact_search_match(match: dict) -> dict:
 
 
 def _is_channel_id(value: str) -> bool:
-    return bool(value) and value[0] == "C" and value[1:].isalnum()
+    return bool(value) and value[0] in ("C", "G") and value[1:].isalnum()
 
 
 def _resolve_channel_id_to_name(client, channel_id: str) -> str | None:
