@@ -186,12 +186,7 @@ _MCP_FOOTER = {"type": "context", "elements": [{"type": "mrkdwn", "text": "(Sent
 
 def _build_blocks(text: str) -> list[dict]:
     return [
-        {
-            "type": "rich_text",
-            "elements": [
-                {"type": "rich_text_section", "elements": [{"type": "text", "text": text}]},
-            ],
-        },
+        {"type": "section", "text": {"type": "mrkdwn", "text": text}},
         _MCP_FOOTER,
     ]
 
