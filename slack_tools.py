@@ -166,6 +166,18 @@ def _compact_search_match(match: dict) -> dict:
     return result
 
 
+def _is_channel_id(value: str) -> bool:
+    return bool(value) and value[0] == "C" and value[1:].isalnum()
+
+
+def _resolve_channel_id_to_name(client, channel_id: str) -> str | None:
+    try:
+        resp = client.conversations_info(channel=channel_id)
+        return resp["channel"]["name"]
+    except SlackApiError:
+        return None
+
+
 def _validate_writable_channel(
     channel: str, writable_channels: list[str] | None
 ) -> tuple[bool, str | None]:
@@ -207,11 +219,17 @@ def send_message(channel: str, text: str) -> dict:
 
     ctx = get_context()
     writable_channels = ctx.get_state("writable_channels")
-    ok, err = _validate_writable_channel(channel, writable_channels)
-    if not ok:
-        return {"ok": False, "error": err}
 
     normalized = channel.lstrip("#")
+    channel_name = normalized
+    if _is_channel_id(normalized):
+        channel_name = _resolve_channel_id_to_name(client, normalized)
+        if not channel_name:
+            return {"ok": False, "error": f"Channel '{normalized}' not found"}
+
+    ok, err = _validate_writable_channel(channel_name, writable_channels)
+    if not ok:
+        return {"ok": False, "error": err}
     try:
         response = client.chat_postMessage(channel=normalized, text=text, blocks=_build_blocks(text))
         logger.info("send_message", extra={"user_id": user_id, "channel": normalized})
@@ -239,11 +257,17 @@ def reply_in_thread(channel: str, thread_ts: str, text: str) -> dict:
 
     ctx = get_context()
     writable_channels = ctx.get_state("writable_channels")
-    ok, err = _validate_writable_channel(channel, writable_channels)
-    if not ok:
-        return {"ok": False, "error": err}
 
     normalized = channel.lstrip("#")
+    channel_name = normalized
+    if _is_channel_id(normalized):
+        channel_name = _resolve_channel_id_to_name(client, normalized)
+        if not channel_name:
+            return {"ok": False, "error": f"Channel '{normalized}' not found"}
+
+    ok, err = _validate_writable_channel(channel_name, writable_channels)
+    if not ok:
+        return {"ok": False, "error": err}
     try:
         response = client.chat_postMessage(
             channel=normalized, text=text, blocks=_build_blocks(text), thread_ts=thread_ts

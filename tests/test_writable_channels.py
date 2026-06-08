@@ -3,7 +3,13 @@ from unittest.mock import MagicMock, patch
 from slack_sdk.errors import SlackApiError
 
 from auth.auth_info_middleware import _parse_writable_channels
-from slack_tools import _build_blocks, _validate_writable_channel, reply_in_thread, send_message
+from slack_tools import (
+    _build_blocks,
+    _is_channel_id,
+    _validate_writable_channel,
+    reply_in_thread,
+    send_message,
+)
 
 
 class TestParseWritableChannels:
@@ -187,3 +193,101 @@ class TestReplyInThread:
         result = reply_in_thread("random", "1234.5678", "hello")
         assert result["ok"] is False
         assert "Not authenticated" in result["error"]
+
+
+class TestIsChannelId:
+    def test_recognizes_channel_id(self):
+        assert _is_channel_id("C09KPE8EACW") is True
+
+    def test_rejects_channel_name(self):
+        assert _is_channel_id("random") is False
+
+    def test_rejects_empty(self):
+        assert _is_channel_id("") is False
+
+    def test_rejects_hash_prefixed_name(self):
+        assert _is_channel_id("#random") is False
+
+
+class TestChannelIdResolution:
+    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_authenticated_client")
+    def test_send_resolves_channel_id_to_name(self, mock_auth, mock_ctx):
+        mock_client = MagicMock()
+        mock_client.conversations_info.return_value = {"channel": {"name": "random"}}
+        mock_client.chat_postMessage.return_value = {
+            "ok": True,
+            "ts": "1234.5678",
+            "channel": "C999",
+        }
+        mock_client.chat_getPermalink.return_value = {
+            "ok": True,
+            "permalink": "https://workspace.slack.com/archives/C999/p12345678",
+        }
+        mock_auth.return_value = (mock_client, "U123", None)
+        ctx = MagicMock()
+        ctx.get_state.return_value = ["random"]
+        mock_ctx.return_value = ctx
+
+        result = send_message("C999", "hello")
+        assert result["ok"] is True
+        mock_client.conversations_info.assert_called_once_with(channel="C999")
+        mock_client.chat_postMessage.assert_called_once_with(
+            channel="C999", text="hello", blocks=_build_blocks("hello")
+        )
+
+    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_authenticated_client")
+    def test_send_rejects_channel_id_not_in_allowlist(self, mock_auth, mock_ctx):
+        mock_client = MagicMock()
+        mock_client.conversations_info.return_value = {"channel": {"name": "secret"}}
+        mock_auth.return_value = (mock_client, "U123", None)
+        ctx = MagicMock()
+        ctx.get_state.return_value = ["random"]
+        mock_ctx.return_value = ctx
+
+        result = send_message("C999", "hello")
+        assert result["ok"] is False
+        assert "secret" in result["error"]
+
+    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_authenticated_client")
+    def test_send_returns_error_for_unknown_channel_id(self, mock_auth, mock_ctx):
+        mock_client = MagicMock()
+        mock_client.conversations_info.side_effect = SlackApiError(
+            "channel_not_found", MagicMock(data={"error": "channel_not_found"})
+        )
+        mock_auth.return_value = (mock_client, "U123", None)
+        ctx = MagicMock()
+        ctx.get_state.return_value = ["random"]
+        mock_ctx.return_value = ctx
+
+        result = send_message("C000INVALID", "hello")
+        assert result["ok"] is False
+        assert "not found" in result["error"]
+
+    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_authenticated_client")
+    def test_reply_resolves_channel_id_to_name(self, mock_auth, mock_ctx):
+        mock_client = MagicMock()
+        mock_client.conversations_info.return_value = {"channel": {"name": "random"}}
+        mock_client.chat_postMessage.return_value = {
+            "ok": True,
+            "ts": "1234.9999",
+            "channel": "C999",
+        }
+        mock_client.chat_getPermalink.return_value = {
+            "ok": True,
+            "permalink": "https://workspace.slack.com/archives/C999/p12349999",
+        }
+        mock_auth.return_value = (mock_client, "U123", None)
+        ctx = MagicMock()
+        ctx.get_state.return_value = ["random"]
+        mock_ctx.return_value = ctx
+
+        result = reply_in_thread("C999", "1234.5678", "reply text")
+        assert result["ok"] is True
+        mock_client.conversations_info.assert_called_once_with(channel="C999")
+        mock_client.chat_postMessage.assert_called_once_with(
+            channel="C999", text="reply text", blocks=_build_blocks("reply text"), thread_ts="1234.5678"
+        )
