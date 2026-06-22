@@ -56,7 +56,7 @@ class TestExtractBlockText:
                 ],
             }
         ]
-        assert _extract_block_text(blocks) == "hello \nworld"
+        assert _extract_block_text(blocks) == "hello world"
 
     def test_extracts_links_users_channels(self):
         blocks = [
@@ -74,7 +74,30 @@ class TestExtractBlockText:
                 ],
             }
         ]
-        assert _extract_block_text(blocks) == "https://example.com\n<@U123>\n<#C456>"
+        assert _extract_block_text(blocks) == "https://example.com<@U123><#C456>"
+
+    def test_newlines_between_sections_not_within(self):
+        blocks = [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [
+                            {"type": "text", "text": "paragraph one "},
+                            {"type": "user", "user_id": "U123"},
+                        ],
+                    },
+                    {
+                        "type": "rich_text_section",
+                        "elements": [
+                            {"type": "text", "text": "paragraph two"},
+                        ],
+                    },
+                ],
+            }
+        ]
+        assert _extract_block_text(blocks) == "paragraph one <@U123>\nparagraph two"
 
     def test_recurses_into_rich_text_list(self):
         blocks = [

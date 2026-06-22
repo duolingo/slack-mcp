@@ -31,6 +31,8 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse
 from starlette.routing import Route
 
+from auth.token_auth import is_slack_token, resolve_slack_identity
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,6 +50,11 @@ class SlackOAuthProvider(InMemoryOAuthProvider):
     7. MCP client exchanges MCP auth code for MCP-issued access token
     8. Tool calls use MCP token; provider looks up stored xoxp-* token
     """
+
+    # Override parent's 1-hour default to 30 days. Note: since all token state
+    # is in-memory, the effective TTL is min(this value, time until next
+    # restart/deploy).
+    ACCESS_TOKEN_EXPIRY_SECONDS = 30 * 24 * 60 * 60  # 30 days
 
     def __init__(
         self,
@@ -313,6 +320,39 @@ class SlackOAuthProvider(InMemoryOAuthProvider):
 
         return HTMLResponse(content=html_content)
 
+    def _extend_token_ttl(self, oauth_token: OAuthToken, context: str) -> OAuthToken:
+        """Override the MCP access token TTL to ACCESS_TOKEN_EXPIRY_SECONDS.
+
+        The parent issues tokens with a 1-hour default. This replaces the
+        stored AccessToken with an updated expires_at and returns a new
+        OAuthToken with the corresponding expires_in.
+        """
+        existing = self.access_tokens.get(oauth_token.access_token)
+        if existing is None:
+            logger.warning(
+                "Parent did not store access token in self.access_tokens "
+                "(%s) — skipping TTL override",
+                context,
+            )
+            return oauth_token
+
+        self.access_tokens[oauth_token.access_token] = existing.model_copy(
+            update={"expires_at": int(time.time()) + self.ACCESS_TOKEN_EXPIRY_SECONDS}
+        )
+        oauth_token = OAuthToken(
+            access_token=oauth_token.access_token,
+            token_type=oauth_token.token_type,
+            expires_in=self.ACCESS_TOKEN_EXPIRY_SECONDS,
+            scope=oauth_token.scope,
+            refresh_token=oauth_token.refresh_token,
+        )
+        logger.info(
+            "Issued MCP access token (%s) with %d-day TTL",
+            context,
+            self.ACCESS_TOKEN_EXPIRY_SECONDS // 86400,
+        )
+        return oauth_token
+
     async def exchange_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
     ) -> OAuthToken:
@@ -327,6 +367,7 @@ class SlackOAuthProvider(InMemoryOAuthProvider):
 
         # Call parent to generate MCP tokens
         oauth_token = await super().exchange_authorization_code(client, authorization_code)
+        oauth_token = self._extend_token_ttl(oauth_token, "auth code exchange")
 
         # Only now remove the code-keyed entry and associate with access token
         if slack_info:
@@ -363,6 +404,7 @@ class SlackOAuthProvider(InMemoryOAuthProvider):
 
         # Call parent to generate new MCP tokens
         oauth_token = await super().exchange_refresh_token(client, refresh_token, scopes)
+        oauth_token = self._extend_token_ttl(oauth_token, "refresh")
 
         # Only now remove old entry and transfer the Slack token to the new access token
         if old_slack_info:
@@ -379,6 +421,36 @@ class SlackOAuthProvider(InMemoryOAuthProvider):
             )
 
         return oauth_token
+
+    async def verify_token(self, token: str) -> FastMCPAccessToken | None:
+        """
+        Verify a bearer token presented by an MCP client.
+
+        In addition to MCP-issued tokens (the standard OAuth 2.1 proxy flow),
+        a caller may supply a raw Slack token directly as the bearer credential
+        (BYOK). A valid Slack token is validated via auth.test and surfaced to
+        the tools through the same ``slack_token``/``slack_user_id`` claims used
+        by the OAuth flow, so trusted callers can skip interactive OAuth.
+
+        Any non-Slack bearer is delegated to the normal MCP token verification,
+        so interactive OAuth clients are unaffected.
+        """
+        if is_slack_token(token):
+            slack_user_id = await resolve_slack_identity(token)
+            if not slack_user_id:
+                return None
+            return FastMCPAccessToken(
+                token=token,
+                client_id=slack_user_id,
+                scopes=list(self._slack_scopes),
+                expires_at=None,
+                claims={
+                    "slack_token": token,
+                    "slack_user_id": slack_user_id,
+                    "is_byok": True,
+                },
+            )
+        return await super().verify_token(token)
 
     async def load_access_token(self, token: str):
         """

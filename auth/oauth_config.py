@@ -22,7 +22,7 @@ class SlackOAuthConfig:
         self.port = int(os.getenv("SLACK_MCP_PORT", "8001"))
         # Determine base URL (with port if not already specified in base_uri).
         # Only append port for non-standard schemes (e.g. http://localhost needs :8001,
-        # but https://slack-mcp.internal.duolingo.com should NOT get :8001 appended).
+        # but an HTTPS production URL should NOT get :8001 appended).
         parsed = urlparse(self.base_uri)
         if parsed.port:
             # Port already explicit in the URI
