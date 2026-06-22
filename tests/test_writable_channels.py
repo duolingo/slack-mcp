@@ -341,7 +341,7 @@ class TestChannelIdResolution:
 
         result = send_message("C999", "hello")
         assert result["ok"] is False
-        assert "not found" in result["error"]
+        assert "not in the writable allowlist" in result["error"]
         mock_client.chat_postMessage.assert_not_called()
 
     @patch("slack_tools.get_context")
