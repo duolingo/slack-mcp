@@ -131,9 +131,15 @@ def slack_search_messages(
     query: Annotated[str, "Search query string (can be empty if using only filters)"],
     count: Annotated[int, "Number of results per page (max 100)"] = 20,
     page: Annotated[int, "Page number for pagination"] = 1,
-    from_user: Annotated[str | None, "Filter by user ID or username (e.g., 'U123ABC' or '@john')"] = None,
-    in_channel: Annotated[str | None, "Filter by channel ID or name (e.g., 'C123ABC' or '#general')"] = None,
-    after_date: Annotated[str | None, "Messages after this date (YYYY-MM-DD or relative like '7d', '1m')"] = None,
+    from_user: Annotated[
+        str | None, "Filter by user ID or username (e.g., 'U123ABC' or '@john')"
+    ] = None,
+    in_channel: Annotated[
+        str | None, "Filter by channel ID or name (e.g., 'C123ABC' or '#general')"
+    ] = None,
+    after_date: Annotated[
+        str | None, "Messages after this date (YYYY-MM-DD or relative like '7d', '1m')"
+    ] = None,
     before_date: Annotated[str | None, "Messages before this date (YYYY-MM-DD or relative)"] = None,
     sort_by: Annotated[str, "Sort by 'timestamp' or 'relevance'"] = "relevance",
     sort_order: Annotated[str, "Sort order: 'asc' or 'desc'"] = "desc",
@@ -159,7 +165,9 @@ def slack_search_messages(
     annotations={"title": "Get Users", "readOnlyHint": True},
 )
 def slack_get_users(
-    user_id: Annotated[str | None, "User ID to get a specific profile; omit to list all users"] = None,
+    user_id: Annotated[
+        str | None, "User ID to get a specific profile; omit to list all users"
+    ] = None,
     limit: Annotated[int, "Maximum number of users when listing (max 1000)"] = 100,
     cursor: Annotated[str | None, "Pagination cursor from previous response"] = None,
     compact: Annotated[bool, "If True, returns only essential fields"] = True,
@@ -173,8 +181,12 @@ def slack_get_users(
     annotations={"title": "Get Channels", "readOnlyHint": True},
 )
 def slack_get_channels(
-    channel_id: Annotated[str | None, "Channel ID to get specific channel info; omit to list channels"] = None,
-    types: Annotated[str | None, "Channel types to filter: 'public_channel,private_channel', 'im,mpim', etc."] = None,
+    channel_id: Annotated[
+        str | None, "Channel ID to get specific channel info; omit to list channels"
+    ] = None,
+    types: Annotated[
+        str | None, "Channel types to filter: 'public_channel,private_channel', 'im,mpim', etc."
+    ] = None,
     limit: Annotated[int, "Maximum number of channels when listing (max 1000)"] = 100,
     cursor: Annotated[str | None, "Pagination cursor from previous response"] = None,
     include_members: Annotated[bool, "Include member list when getting a specific channel"] = False,
@@ -193,8 +205,13 @@ def slack_get_channels(
     annotations={"title": "Send Message", "readOnlyHint": False},
 )
 def slack_send_message(
-    channel: Annotated[str, "Channel name or ID to send to (e.g., 'general', '#general', or 'C1234567890'). Must be in the allowlist."],
-    text: Annotated[str, "Message text. Supports Slack mrkdwn (*bold*, _italic_, <url|link text>, <@user_id>)."],
+    channel: Annotated[
+        str,
+        "Channel name or ID to send to (e.g., 'general', '#general', or 'C1234567890'). Must be in the allowlist.",
+    ],
+    text: Annotated[
+        str, "Message text. Supports Slack mrkdwn (*bold*, _italic_, <url|link text>, <@user_id>)."
+    ],
 ) -> dict:
     """Validates channel against allowlist, then calls chat_postMessage with Block Kit footer."""
     return slack_tools.send_message(channel, text)
@@ -209,8 +226,12 @@ def slack_send_message(
     annotations={"title": "Reply in Thread", "readOnlyHint": False},
 )
 def slack_reply_in_thread(
-    channel: Annotated[str, "Channel name or ID where the thread exists. Must be in the allowlist."],
-    thread_ts: Annotated[str, "Timestamp of the parent message to reply to (e.g., '1234567890.123456')"],
+    channel: Annotated[
+        str, "Channel name or ID where the thread exists. Must be in the allowlist."
+    ],
+    thread_ts: Annotated[
+        str, "Timestamp of the parent message to reply to (e.g., '1234567890.123456')"
+    ],
     text: Annotated[str, "Reply text. Supports Slack mrkdwn formatting."],
 ) -> dict:
     """Validates channel against allowlist, then calls chat_postMessage with thread_ts and Block Kit footer."""
@@ -266,7 +287,9 @@ def main():
     safe_print("   👤 slack_get_users - List users or get user profile")
     safe_print("   📢 slack_get_channels - List channels or get channel info")
     safe_print("   ✏️  slack_send_message - Send a message (requires X-Writable-Channels header)")
-    safe_print("   ↩️  slack_reply_in_thread - Reply in a thread (requires X-Writable-Channels header)")
+    safe_print(
+        "   ↩️  slack_reply_in_thread - Reply in a thread (requires X-Writable-Channels header)"
+    )
     safe_print("")
 
     if not config.is_configured():

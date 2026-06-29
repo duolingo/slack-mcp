@@ -22,4 +22,4 @@ RUN uv --quiet sync --frozen
 EXPOSE 8001
 
 # Run the server using uv run to use the virtual environment
-CMD ["uv", "run", "python", "main.py"]
+CMD ["uv", "run", "python", "server.py"]

@@ -36,23 +36,35 @@ def _extract_block_text(blocks: list) -> str:
     When a message uses Block Kit, the top-level `text` field is often empty
     and all content lives in `blocks`. This extracts a readable text fallback.
 
-    Rich-text blocks nest arbitrarily — rich_text_list, rich_text_quote, and
-    rich_text_section wrap their content in further `elements` arrays — so the
-    inner walker recurses into any container that exposes `elements`.
+    Inline elements within a single rich_text_section are concatenated without
+    newlines (they form one paragraph). Newlines separate sections, list items,
+    and other block-level containers.
     """
     parts = []
+
+    def _inline_text(elements) -> str:
+        """Concatenate inline elements within a single section."""
+        fragments = []
+        for item in elements:
+            item_type = item.get("type", "")
+            if item_type == "text":
+                fragments.append(item.get("text", ""))
+            elif item_type == "link":
+                fragments.append(item.get("url", ""))
+            elif item_type == "user":
+                fragments.append(f"<@{item.get('user_id', '')}>")
+            elif item_type == "channel":
+                fragments.append(f"<#{item.get('channel_id', '')}>")
+        return "".join(fragments)
+
+    _INLINE_CONTAINERS = {"rich_text_section", "rich_text_quote", "rich_text_preformatted"}
 
     def _walk_rich_text(elements):
         for item in elements:
             item_type = item.get("type", "")
-            if item_type == "text":
-                parts.append(item.get("text", ""))
-            elif item_type == "link":
-                parts.append(item.get("url", ""))
-            elif item_type == "user":
-                parts.append(f"<@{item.get('user_id', '')}>")
-            elif item_type == "channel":
-                parts.append(f"<#{item.get('channel_id', '')}>")
+            if item_type in _INLINE_CONTAINERS:
+                if text := _inline_text(item.get("elements", [])):
+                    parts.append(text)
             elif item.get("elements"):
                 _walk_rich_text(item["elements"])
 
@@ -91,17 +103,14 @@ def _compact_message(msg: dict) -> dict:
     if msg.get("edited"):
         result["edited"] = True
     if msg.get("reactions"):
-        result["reactions"] = [
-            {"name": r["name"], "count": r["count"]} for r in msg["reactions"]
-        ]
+        result["reactions"] = [{"name": r["name"], "count": r["count"]} for r in msg["reactions"]]
     if msg.get("attachments"):
         compact_attachments = [ca for a in msg["attachments"] if (ca := _compact_attachment(a))]
         if compact_attachments:
             result["attachments"] = compact_attachments
     if msg.get("files"):
         result["files"] = [
-            {"name": f.get("name", ""), "filetype": f.get("filetype", "")}
-            for f in msg["files"]
+            {"name": f.get("name", ""), "filetype": f.get("filetype", "")} for f in msg["files"]
         ]
     return result
 
@@ -166,26 +175,53 @@ def _compact_search_match(match: dict) -> dict:
     return result
 
 
+def _is_private_search_match(match: dict) -> bool:
+    """Return True if a search match comes from a private channel, DM, or group DM."""
+    # Slack tags some matches only at the top level (type "im"/"group"/"mpim")
+    # rather than via nested channel flags, so check both.
+    if match.get("type") in ("im", "group", "mpim"):
+        return True
+    channel = match.get("channel", {})
+    if not isinstance(channel, dict):
+        return False
+    return bool(
+        channel.get("is_private")
+        or channel.get("is_im")
+        or channel.get("is_mpim")
+        or channel.get("is_group")
+    )
+
+
 def _is_channel_id(value: str) -> bool:
     return bool(value) and value[0] in ("C", "G") and value[1:].isalnum()
 
 
-def _resolve_channel_id_to_name(client, channel_id: str) -> str | None:
+def _resolve_channel_id(client, channel_id: str) -> dict | None:
+    """Return the channel dict from conversations_info, or None on failure."""
     try:
         resp = client.conversations_info(channel=channel_id)
-        return resp["channel"]["name"]
+        return resp.get("channel")
     except SlackApiError:
         return None
 
 
 def _validate_writable_channel(
-    channel: str, writable_channels: list[str] | None
+    channel: str,
+    writable_channels: list[str] | None,
+    channel_id: str | None = None,
 ) -> tuple[bool, str | None]:
-    """Check whether *channel* is in the writable allowlist."""
+    """Check whether the channel is in the writable allowlist.
+
+    Matches by name and, when provided, by channel id, so an allowlist of ids
+    authorizes id-addressed writes just as a name allowlist authorizes names.
+    """
     if not writable_channels:
         return False, "No writable channels configured. Set the X-Writable-Channels header."
     normalized = channel.lstrip("#")
-    if normalized in writable_channels:
+    candidates = {normalized}
+    if channel_id:
+        candidates.add(channel_id.lstrip("#"))
+    if candidates & set(writable_channels):
         return True, None
     return False, (
         f"Channel '{normalized}' is not in the writable allowlist. "
@@ -193,14 +229,39 @@ def _validate_writable_channel(
     )
 
 
-_MCP_FOOTER = {"type": "context", "elements": [{"type": "mrkdwn", "text": "(Sent using Slack MCP)"}]}
+_MCP_FOOTER = {
+    "type": "context",
+    "elements": [{"type": "mrkdwn", "text": "(Sent using Slack MCP)"}],
+}
+
+
+_SECTION_TEXT_LIMIT = 3000
 
 
 def _build_blocks(text: str) -> list[dict]:
-    return [
-        {"type": "section", "text": {"type": "mrkdwn", "text": text}},
-        _MCP_FOOTER,
-    ]
+    if len(text) <= _SECTION_TEXT_LIMIT:
+        return [
+            {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+            _MCP_FOOTER,
+        ]
+    blocks = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= _SECTION_TEXT_LIMIT:
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": remaining}})
+            break
+        split_at = remaining.rfind("\n", 0, _SECTION_TEXT_LIMIT)
+        # Only when we split on a newline do we consume that single delimiter;
+        # any further leading newlines are intentional paragraph breaks and stay.
+        drop_delimiter = split_at > 0
+        if split_at <= 0:
+            split_at = remaining.rfind(" ", 0, _SECTION_TEXT_LIMIT)
+        if split_at <= 0:
+            split_at = _SECTION_TEXT_LIMIT
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": remaining[:split_at]}})
+        remaining = remaining[split_at + 1 :] if drop_delimiter else remaining[split_at:]
+    blocks.append(_MCP_FOOTER)
+    return blocks
 
 
 def _get_permalink(client, channel_id: str, message_ts: str) -> str | None:
@@ -211,27 +272,59 @@ def _get_permalink(client, channel_id: str, message_ts: str) -> str | None:
         return None
 
 
+def _validate_write_channel(
+    client, channel: str, writable_channels: list[str] | None
+) -> tuple[str, dict | None]:
+    """Resolve, validate writability, and enforce public-only for a write operation.
+
+    Returns (normalized_channel_name, error_dict_or_None).
+    """
+    normalized = channel.lstrip("#")
+    channel_name = normalized
+    channel_id = None
+    public_only = _public_channels_only()
+
+    if _is_channel_id(normalized):
+        channel_id = normalized
+        ch = _resolve_channel_id(client, normalized)
+        if not ch:
+            return normalized, {"ok": False, "error": f"Channel '{normalized}' not found"}
+        if public_only and (
+            ch.get("is_private") or ch.get("is_im") or ch.get("is_mpim") or ch.get("is_group")
+        ):
+            return normalized, {
+                "ok": False,
+                "error": f"Token-based auth does not allow access to private channels or DMs ({normalized})",
+            }
+        channel_name = ch.get("name", normalized)
+
+    ok, err = _validate_writable_channel(channel_name, writable_channels, channel_id=channel_id)
+    if not ok:
+        return normalized, {"ok": False, "error": err}
+
+    if public_only and not channel_id:
+        target = _resolve_channel_name(client, normalized, public_only=True)
+        if not target:
+            return normalized, {"ok": False, "error": f"Channel '{normalized}' not found"}
+
+    return normalized, None
+
+
 def send_message(channel: str, text: str) -> dict:
     """Send a message to a Slack channel (must be in the writable allowlist)."""
     client, user_id, error = _get_authenticated_client()
     if error:
         return error
 
-    ctx = get_context()
-    writable_channels = ctx.get_state("writable_channels")
+    writable_channels = get_context().get_state("writable_channels")
+    normalized, err = _validate_write_channel(client, channel, writable_channels)
+    if err:
+        return err
 
-    normalized = channel.lstrip("#")
-    channel_name = normalized
-    if _is_channel_id(normalized):
-        channel_name = _resolve_channel_id_to_name(client, normalized)
-        if not channel_name:
-            return {"ok": False, "error": f"Channel '{normalized}' not found"}
-
-    ok, err = _validate_writable_channel(channel_name, writable_channels)
-    if not ok:
-        return {"ok": False, "error": err}
     try:
-        response = client.chat_postMessage(channel=normalized, text=text, blocks=_build_blocks(text))
+        response = client.chat_postMessage(
+            channel=normalized, text=text, blocks=_build_blocks(text)
+        )
         logger.info("send_message", extra={"user_id": user_id, "channel": normalized})
         result = {
             "ok": True,
@@ -255,19 +348,11 @@ def reply_in_thread(channel: str, thread_ts: str, text: str) -> dict:
     if error:
         return error
 
-    ctx = get_context()
-    writable_channels = ctx.get_state("writable_channels")
+    writable_channels = get_context().get_state("writable_channels")
+    normalized, err = _validate_write_channel(client, channel, writable_channels)
+    if err:
+        return err
 
-    normalized = channel.lstrip("#")
-    channel_name = normalized
-    if _is_channel_id(normalized):
-        channel_name = _resolve_channel_id_to_name(client, normalized)
-        if not channel_name:
-            return {"ok": False, "error": f"Channel '{normalized}' not found"}
-
-    ok, err = _validate_writable_channel(channel_name, writable_channels)
-    if not ok:
-        return {"ok": False, "error": err}
     try:
         response = client.chat_postMessage(
             channel=normalized, text=text, blocks=_build_blocks(text), thread_ts=thread_ts
@@ -394,6 +479,40 @@ def _build_search_query(
     return " ".join(query_parts)
 
 
+def _public_channels_only() -> bool:
+    """Return True if the caller should be restricted to public channels.
+
+    BYOK callers are restricted by default unless X-Allow-Private-Channels is set.
+    """
+    try:
+        ctx = get_context()
+        if not ctx:
+            return False
+        if not ctx.get_state("is_byok"):
+            return False
+        return not ctx.get_state("allow_private_channels")
+    except Exception:
+        return False
+
+
+def _check_public_channel(client, channel_id: str) -> dict | None:
+    """Return an error dict if the channel is private/DM/group-DM, None if public."""
+    try:
+        resp = client.conversations_info(channel=channel_id)
+    except SlackApiError as exc:
+        return {
+            "ok": False,
+            "error": f"Cannot verify channel {channel_id}: {exc.response['error']}",
+        }
+    ch = resp.get("channel", {})
+    if ch.get("is_private") or ch.get("is_im") or ch.get("is_mpim") or ch.get("is_group"):
+        return {
+            "ok": False,
+            "error": f"Token-based auth does not allow access to private channels or DMs ({channel_id})",
+        }
+    return None
+
+
 def _get_oauth21_client():
     """
     Get a Slack client from OAuth 2.1 context (set by AuthInfoMiddleware from token claims).
@@ -433,20 +552,23 @@ def _get_authenticated_client():
     return None, None, {"ok": False, "error": "Not authenticated. Complete the OAuth flow first."}
 
 
-def _resolve_channel_name(client, channel_name: str) -> Optional[str]:
+def _resolve_channel_name(client, channel_name: str, *, public_only: bool = False) -> Optional[str]:
     """
     Resolve a channel name to its ID, paginating through all results.
 
     Args:
         client: Authenticated Slack client
         channel_name: Channel name (without #)
+        public_only: If True, only resolve against public channels (prevents
+            leaking private channel existence via distinct error messages).
 
     Returns:
         Channel ID if found, None otherwise
     """
     cursor = None
+    types = "public_channel" if public_only else "public_channel,private_channel"
     while True:
-        kwargs = {"types": "public_channel,private_channel"}
+        kwargs = {"types": types}
         if cursor:
             kwargs["cursor"] = cursor
 
@@ -491,11 +613,15 @@ def get_channel_messages(
 
     try:
         # Handle channel name format (e.g., '#general' -> lookup ID)
+        public_only = _public_channels_only()
         if channel_id.startswith("#"):
             channel_name = channel_id[1:]
-            channel_id = _resolve_channel_name(client, channel_name)
+            channel_id = _resolve_channel_name(client, channel_name, public_only=public_only)
             if not channel_id:
                 return {"ok": False, "error": f"Channel '{channel_name}' not found"}
+
+        if public_only and (err := _check_public_channel(client, channel_id)):
+            return err
 
         # Fetch conversation history
         kwargs = {"channel": channel_id, "limit": min(limit, 1000)}
@@ -563,11 +689,15 @@ def get_thread_replies(
 
     try:
         # Handle channel name format
+        public_only = _public_channels_only()
         if channel_id.startswith("#"):
             channel_name = channel_id[1:]
-            channel_id = _resolve_channel_name(client, channel_name)
+            channel_id = _resolve_channel_name(client, channel_name, public_only=public_only)
             if not channel_id:
                 return {"ok": False, "error": f"Channel '{channel_name}' not found"}
+
+        if public_only and (err := _check_public_channel(client, channel_id)):
+            return err
 
         # Fetch thread replies
         kwargs = {"channel": channel_id, "ts": thread_ts, "limit": min(limit, 1000)}
@@ -691,8 +821,21 @@ def search_messages(
         messages_data = response.get("messages", {})
         matches = messages_data.get("matches", [])
 
+        public_only = _public_channels_only()
+        if public_only:
+            matches = [m for m in matches if not _is_private_search_match(m)]
+
         if compact:
             matches = [_compact_search_match(m) for m in matches]
+
+        if public_only:
+            total = len(matches)
+            page = 1
+            page_count = 1
+        else:
+            total = messages_data.get("total", 0)
+            page = messages_data.get("page", 1)
+            page_count = messages_data.get("page_count", 1)
 
         return {
             "ok": True,
@@ -706,9 +849,9 @@ def search_messages(
                 "sort_order": sort_order,
             },
             "matches": matches,
-            "total": messages_data.get("total", 0),
-            "page": messages_data.get("page", 1),
-            "page_count": messages_data.get("page_count", 1),
+            "total": total,
+            "page": page,
+            "page_count": page_count,
         }
 
     except SlackApiError as e:
@@ -836,11 +979,19 @@ def get_channels(
         return error
 
     try:
+        public_only = _public_channels_only()
+        if public_only:
+            types = "public_channel"
+
         if channel_id:
             # Get specific channel info
             logger.debug(
                 f"get_channels called by user {authenticated_user_id} for channel {channel_id}"
             )
+
+            if public_only and (err := _check_public_channel(client, channel_id)):
+                return err
+
             response = client.conversations_info(channel=channel_id)
 
             if not response.get("ok"):

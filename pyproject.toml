@@ -22,11 +22,11 @@ name = "Aaron Wang"
 text = "Apache-2.0"
 
 [project.scripts]
-slack-mcp = "main:main"
+slack-mcp = "server:main"
 
 [tool.setuptools]
 packages = ["auth"]
-py-modules = ["main", "slack_tools"]
+py-modules = ["server", "slack_tools"]
 
 [project.optional-dependencies]
 dev = ["ruff>=0.12.4"]

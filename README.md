@@ -63,7 +63,7 @@ export SLACK_MCP_PORT=8001
 ### 5. Run the Server
 
 ```bash
-uv run python main.py
+uv run python server.py
 ```
 
 The server will start on `http://localhost:8001` by default. Make sure your ngrok proxy is running alongside it for OAuth to work.
