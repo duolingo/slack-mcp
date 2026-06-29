@@ -196,10 +196,11 @@ def _is_channel_id(value: str) -> bool:
     return bool(value) and value[0] in ("C", "G") and value[1:].isalnum()
 
 
-def _resolve_channel_id_to_name(client, channel_id: str) -> str | None:
+def _resolve_channel_id(client, channel_id: str) -> dict | None:
+    """Return the channel dict from conversations_info, or None on failure."""
     try:
         resp = client.conversations_info(channel=channel_id)
-        return resp.get("channel", {}).get("name")
+        return resp.get("channel")
     except SlackApiError:
         return None
 
@@ -285,11 +286,17 @@ def _validate_write_channel(
 
     if _is_channel_id(normalized):
         channel_id = normalized
-        if public_only and (err := _check_public_channel(client, channel_id)):
-            return normalized, err
-        channel_name = _resolve_channel_id_to_name(client, normalized)
-        if not channel_name:
+        ch = _resolve_channel_id(client, normalized)
+        if not ch:
             return normalized, {"ok": False, "error": f"Channel '{normalized}' not found"}
+        if public_only and (
+            ch.get("is_private") or ch.get("is_im") or ch.get("is_mpim") or ch.get("is_group")
+        ):
+            return normalized, {
+                "ok": False,
+                "error": f"Token-based auth does not allow access to private channels or DMs ({normalized})",
+            }
+        channel_name = ch.get("name", normalized)
 
     ok, err = _validate_writable_channel(channel_name, writable_channels, channel_id=channel_id)
     if not ok:
@@ -299,8 +306,6 @@ def _validate_write_channel(
         target = _resolve_channel_name(client, normalized, public_only=True)
         if not target:
             return normalized, {"ok": False, "error": f"Channel '{normalized}' not found"}
-        if err := _check_public_channel(client, target):
-            return normalized, err
 
     return normalized, None
 
