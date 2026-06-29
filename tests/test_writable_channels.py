@@ -113,7 +113,7 @@ class TestValidateWritableChannel:
         assert "C12345" in err
 
     def test_matches_by_channel_id_when_allowlist_uses_ids(self):
-        ok, err = _validate_writable_channel("random", ["C09KPE8EACW"], channel_id="C09KPE8EACW")
+        ok, err = _validate_writable_channel("random", ["C1234567890"], channel_id="C1234567890")
         assert ok is True
         assert err is None
 
