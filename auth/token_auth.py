@@ -3,7 +3,8 @@ Token-based (BYOK) authentication for the Slack MCP server.
 
 Provides an alternative to the interactive OAuth 2.1 flow: a caller may
 authenticate by supplying a Slack token directly as the ``Authorization:
-Bearer <slack-token>`` credential.
+Bearer <slack-token>`` credential. This is intended for trusted or scripted
+deployments (e.g. ai-agents-backend) rather than interactive MCP clients.
 
 Any Slack token type (``xoxp-`` user, ``xoxb-`` bot, etc.) is accepted. A token
 used here should be scoped *without* private-channel access, since token auth

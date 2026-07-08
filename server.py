@@ -11,8 +11,10 @@ import os
 import sys
 from importlib import metadata
 from typing import Annotated
+from urllib.parse import urlparse
 
 import slack_tools
+import uvicorn
 from auth.oauth_config import get_oauth_config
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -33,7 +35,7 @@ def configure_server_for_http():
     Must be called BEFORE server.run().
 
     Sets up SlackOAuthProvider (proxy pattern) and AuthInfoMiddleware
-    for extracting Slack tokens from MCP token claims.
+    for hiding tools the request's auth context can't use.
     """
     config = get_oauth_config()
 
@@ -66,7 +68,7 @@ def configure_server_for_http():
         )
         server.auth = provider
 
-        # Add AuthInfoMiddleware to extract Slack auth info from token claims
+        # Add AuthInfoMiddleware to hide unavailable tools from listings
         auth_middleware = AuthInfoMiddleware()
         server.add_middleware(auth_middleware)
 
@@ -132,15 +134,19 @@ def slack_search_messages(
     count: Annotated[int, "Number of results per page (max 100)"] = 20,
     page: Annotated[int, "Page number for pagination"] = 1,
     from_user: Annotated[
-        str | None, "Filter by user ID or username (e.g., 'U123ABC' or '@john')"
+        str | None,
+        "Filter by user ID or username (e.g., 'U123ABC' or '@john')",
     ] = None,
     in_channel: Annotated[
-        str | None, "Filter by channel ID or name (e.g., 'C123ABC' or '#general')"
+        str | None,
+        "Filter by channel ID or name (e.g., 'C123ABC' or '#general')",
     ] = None,
     after_date: Annotated[
-        str | None, "Messages after this date (YYYY-MM-DD or relative like '7d', '1m')"
+        str | None,
+        "Messages after this date (YYYY-MM-DD or relative like '7d', '1m')"
     ] = None,
-    before_date: Annotated[str | None, "Messages before this date (YYYY-MM-DD or relative)"] = None,
+    before_date: Annotated[
+        str | None, "Messages before this date (YYYY-MM-DD or relative)"] = None,
     sort_by: Annotated[str, "Sort by 'timestamp' or 'relevance'"] = "relevance",
     sort_order: Annotated[str, "Sort order: 'asc' or 'desc'"] = "desc",
     compact: Annotated[bool, "If True, returns only essential fields"] = True,
@@ -166,7 +172,8 @@ def slack_search_messages(
 )
 def slack_get_users(
     user_id: Annotated[
-        str | None, "User ID to get a specific profile; omit to list all users"
+        str | None,
+        "User ID to get a specific profile; omit to list all users",
     ] = None,
     limit: Annotated[int, "Maximum number of users when listing (max 1000)"] = 100,
     cursor: Annotated[str | None, "Pagination cursor from previous response"] = None,
@@ -177,23 +184,41 @@ def slack_get_users(
 
 
 @server.tool(
-    description="List channels or get detailed info for a specific channel. Supports filtering by type (public, private, DM, group DM).",
+    description=(
+        "List channels, search channels by name, or get detailed info for a specific channel. "
+        "Supports filtering by type (public, private, DM, group DM). "
+        "Pass `query` to search by a name fragment (case-insensitive substring match, "
+        "e.g. 'eng' matches '#engineering' and '#eng-infra') instead of listing or "
+        "fetching by exact ID."
+    ),
     annotations={"title": "Get Channels", "readOnlyHint": True},
 )
 def slack_get_channels(
     channel_id: Annotated[
-        str | None, "Channel ID to get specific channel info; omit to list channels"
+        str | None,
+        "Channel ID to get specific channel info; omit to list or search",
+    ] = None,
+    query: Annotated[
+        str | None,
+        "Substring to search for in channel names (case-insensitive, '#' optional). "
+        "Ignored if channel_id is set.",
     ] = None,
     types: Annotated[
-        str | None, "Channel types to filter: 'public_channel,private_channel', 'im,mpim', etc."
+        str | None,
+        "Channel types to filter: 'public_channel,private_channel', 'im,mpim', etc."
     ] = None,
-    limit: Annotated[int, "Maximum number of channels when listing (max 1000)"] = 100,
-    cursor: Annotated[str | None, "Pagination cursor from previous response"] = None,
-    include_members: Annotated[bool, "Include member list when getting a specific channel"] = False,
+    limit: Annotated[int, "Maximum number of channels to return (max 1000)"] = 100,
+    cursor: Annotated[
+        str | None, "Pagination cursor from previous response (plain listing only)"
+    ] = None,
+    include_members: Annotated[
+        bool, "Include member list when getting a specific channel"] = False,
     compact: Annotated[bool, "If True, returns only essential fields"] = True,
 ) -> dict:
-    """Calls conversations_info (single) or conversations_list (all) depending on channel_id."""
-    return slack_tools.get_channels(channel_id, types, limit, cursor, include_members, compact)
+    """Calls conversations_info (single), or conversations_list for listing/search (query)."""
+    return slack_tools.get_channels(
+        channel_id, query, types, limit, cursor, include_members, compact
+    )
 
 
 @server.tool(
@@ -207,7 +232,7 @@ def slack_get_channels(
 def slack_send_message(
     channel: Annotated[
         str,
-        "Channel name or ID to send to (e.g., 'general', '#general', or 'C1234567890'). Must be in the allowlist.",
+        "Channel name or ID to send to (e.g., 'general', '#general', or 'C1234567890'). Must be in the allowlist."
     ],
     text: Annotated[
         str, "Message text. Supports Slack mrkdwn (*bold*, _italic_, <url|link text>, <@user_id>)."
@@ -227,10 +252,12 @@ def slack_send_message(
 )
 def slack_reply_in_thread(
     channel: Annotated[
-        str, "Channel name or ID where the thread exists. Must be in the allowlist."
+        str,
+        "Channel name or ID where the thread exists. Must be in the allowlist."
     ],
     thread_ts: Annotated[
-        str, "Timestamp of the parent message to reply to (e.g., '1234567890.123456')"
+        str,
+        "Timestamp of the parent message to reply to (e.g., '1234567890.123456')"
     ],
     text: Annotated[str, "Reply text. Supports Slack mrkdwn formatting."],
 ) -> dict:
@@ -243,6 +270,26 @@ def slack_reply_in_thread(
 async def health_check(request: Request):
     """Health check endpoint for load balancer."""
     return JSONResponse({"status": "healthy"})
+
+
+class HealthCheckBypass:
+    """Answer GET /health before FastMCP's Host validation runs.
+
+    ALB health checks send the EC2 instance's private IP as the Host header
+    (bridge networking with dynamic ports), which no static allowlist can
+    cover — without this, FastMCP 3's Host validation would 421 every probe
+    and ECS would cycle the tasks. The response is the same static payload as
+    the /health route, which is intentionally unauthenticated anyway.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["path"] == "/health" and scope["method"] == "GET":
+            await JSONResponse({"status": "healthy"})(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
 
 
 def main():
@@ -285,7 +332,7 @@ def main():
     safe_print("   💬 slack_get_thread_replies - Get thread replies")
     safe_print("   🔍 slack_search_messages - Search messages")
     safe_print("   👤 slack_get_users - List users or get user profile")
-    safe_print("   📢 slack_get_channels - List channels or get channel info")
+    safe_print("   📢 slack_get_channels - List, search by name, or get channel info")
     safe_print("   ✏️  slack_send_message - Send a message (requires X-Writable-Channels header)")
     safe_print(
         "   ↩️  slack_reply_in_thread - Reply in a thread (requires X-Writable-Channels header)"
@@ -305,7 +352,23 @@ def main():
         safe_print("✅ Ready for MCP connections")
         safe_print("")
 
-        server.run(transport="streamable-http", host="0.0.0.0", port=port)
+        # FastMCP 3 rejects requests (421) whose Host header isn't loopback,
+        # so allow the public hostname clients actually connect through
+        # (e.g. a Tailscale or gateway domain). Health checks are answered by
+        # HealthCheckBypass before validation, so we run uvicorn on the built
+        # app instead of server.run().
+        public_host = urlparse(config.get_oauth_base_url()).hostname
+        app = server.http_app(
+            transport="streamable-http",
+            allowed_hosts=[public_host] if public_host else [],
+        )
+        uvicorn.run(
+            HealthCheckBypass(app),
+            host="0.0.0.0",
+            port=port,
+            lifespan="on",
+            timeout_graceful_shutdown=2,
+        )
 
     except KeyboardInterrupt:
         safe_print("\n👋 Server shutdown requested")

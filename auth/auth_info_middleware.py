@@ -1,19 +1,14 @@
 """
-Authentication middleware to populate context state with Slack user information.
+Middleware that hides tools unavailable to the request's auth context.
 
-In the proxy authorization server pattern, FastMCP validates the MCP-issued
-Bearer token and calls load_access_token() which attaches the Slack token
-to claims. This middleware extracts those claims into context state.
+Tools read auth data (token claims, allowlist headers) directly via
+FastMCP's dependency accessors; this middleware only filters the tool list.
 """
-
-import logging
 
 from fastmcp.server.dependencies import get_access_token, get_http_request
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 
 from auth.token_auth import is_slack_bot_token
-
-logger = logging.getLogger(__name__)
 
 WRITABLE_CHANNELS_HEADER = "x-writable-channels"
 ALLOW_PRIVATE_CHANNELS_HEADER = "x-allow-private-channels"
@@ -29,51 +24,7 @@ def _parse_writable_channels(header_value: str | None) -> list[str]:
 
 
 class AuthInfoMiddleware(Middleware):
-    """
-    Middleware to extract Slack authentication information from
-    FastMCP-validated access token claims and populate context state.
-    """
-
-    async def _process_request_for_auth(self, context: MiddlewareContext):
-        """Extract slack_token and user_id from FastMCP-validated access token claims."""
-        if not context.fastmcp_context:
-            logger.warning("No fastmcp_context available")
-            return
-
-        try:
-            access_token = get_access_token()
-        except Exception as e:
-            logger.debug("Could not get FastMCP access_token: %s", e)
-            return
-
-        if not access_token:
-            logger.debug("No access token present (might be using stdio transport)")
-            return
-
-        claims = getattr(access_token, "claims", {}) or {}
-        slack_token = claims.get("slack_token")
-        slack_user_id = claims.get("slack_user_id")
-
-        if slack_token and slack_user_id:
-            context.fastmcp_context.set_state("slack_token", slack_token)
-            context.fastmcp_context.set_state("authenticated_user_id", slack_user_id)
-            context.fastmcp_context.set_state("is_byok", bool(claims.get("is_byok")))
-            logger.debug("Authenticated Slack user %s via proxy OAuth", slack_user_id)
-        else:
-            logger.warning("Access token valid but missing slack_token/slack_user_id in claims")
-
-        try:
-            http_request = get_http_request()
-            raw_header = http_request.headers.get(WRITABLE_CHANNELS_HEADER)
-            writable = _parse_writable_channels(raw_header)
-            context.fastmcp_context.set_state("writable_channels", writable)
-            allow_private = http_request.headers.get(
-                ALLOW_PRIVATE_CHANNELS_HEADER, ""
-            ).strip().lower() in ("true", "1", "yes")
-            context.fastmcp_context.set_state("allow_private_channels", allow_private)
-        except Exception:
-            context.fastmcp_context.set_state("writable_channels", [])
-            context.fastmcp_context.set_state("allow_private_channels", False)
+    """Hide write and search tools the request's auth context can't use."""
 
     async def on_list_tools(self, context: MiddlewareContext, call_next):
         """Hide tools that are unavailable for the request's auth context."""
@@ -100,13 +51,3 @@ class AuthInfoMiddleware(Middleware):
         if not writable:
             return [t for t in tools if t.name not in WRITE_TOOL_NAMES]
         return tools
-
-    async def on_call_tool(self, context: MiddlewareContext, call_next):
-        """Extract auth info from token claims and set in context state."""
-        await self._process_request_for_auth(context)
-        return await call_next(context)
-
-    async def on_get_prompt(self, context: MiddlewareContext, call_next):
-        """Extract auth info for prompt requests too."""
-        await self._process_request_for_auth(context)
-        return await call_next(context)

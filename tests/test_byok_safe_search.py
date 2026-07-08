@@ -228,15 +228,11 @@ class TestByokWriteAccess:
     """Verify that BYOK mode blocks writes to private channels."""
 
     @patch("slack_tools._public_channels_only", return_value=True)
-    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_writable_channels", return_value=["secret"])
     @patch("slack_tools._get_authenticated_client")
-    def test_blocks_send_to_private_channel_by_id(self, mock_auth, mock_ctx, mock_byok):
+    def test_blocks_send_to_private_channel_by_id(self, mock_auth, mock_writable, mock_byok):
         client = MagicMock()
         mock_auth.return_value = (client, "U123", None)
-
-        ctx = MagicMock()
-        ctx.get_state.return_value = ["secret"]
-        mock_ctx.return_value = ctx
 
         client.conversations_info.return_value = {
             "ok": True,
@@ -251,17 +247,13 @@ class TestByokWriteAccess:
 
     @patch("slack_tools._public_channels_only", return_value=True)
     @patch("slack_tools._resolve_channel_name", return_value=None)
-    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_writable_channels", return_value=["secret"])
     @patch("slack_tools._get_authenticated_client")
     def test_blocks_send_to_private_channel_by_name(
-        self, mock_auth, mock_ctx, mock_resolve, mock_byok
+        self, mock_auth, mock_writable, mock_resolve, mock_byok
     ):
         client = MagicMock()
         mock_auth.return_value = (client, "U123", None)
-
-        ctx = MagicMock()
-        ctx.get_state.return_value = ["secret"]
-        mock_ctx.return_value = ctx
 
         result = slack_tools.send_message("secret", "hello")
 
@@ -270,15 +262,11 @@ class TestByokWriteAccess:
         client.chat_postMessage.assert_not_called()
 
     @patch("slack_tools._public_channels_only", return_value=True)
-    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_writable_channels", return_value=["secret"])
     @patch("slack_tools._get_authenticated_client")
-    def test_blocks_reply_to_private_channel_by_id(self, mock_auth, mock_ctx, mock_byok):
+    def test_blocks_reply_to_private_channel_by_id(self, mock_auth, mock_writable, mock_byok):
         client = MagicMock()
         mock_auth.return_value = (client, "U123", None)
-
-        ctx = MagicMock()
-        ctx.get_state.return_value = ["secret"]
-        mock_ctx.return_value = ctx
 
         client.conversations_info.return_value = {
             "ok": True,
@@ -293,17 +281,13 @@ class TestByokWriteAccess:
 
     @patch("slack_tools._public_channels_only", return_value=True)
     @patch("slack_tools._resolve_channel_name", return_value=None)
-    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_writable_channels", return_value=["secret"])
     @patch("slack_tools._get_authenticated_client")
     def test_blocks_reply_to_private_channel_by_name(
-        self, mock_auth, mock_ctx, mock_resolve, mock_byok
+        self, mock_auth, mock_writable, mock_resolve, mock_byok
     ):
         client = MagicMock()
         mock_auth.return_value = (client, "U123", None)
-
-        ctx = MagicMock()
-        ctx.get_state.return_value = ["secret"]
-        mock_ctx.return_value = ctx
 
         result = slack_tools.reply_in_thread("secret", "1234.5678", "hello")
 
@@ -312,15 +296,11 @@ class TestByokWriteAccess:
         client.chat_postMessage.assert_not_called()
 
     @patch("slack_tools._public_channels_only", return_value=False)
-    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_writable_channels", return_value=["secret"])
     @patch("slack_tools._get_authenticated_client")
-    def test_oauth_allows_send_to_private_channel(self, mock_auth, mock_ctx, mock_byok):
+    def test_oauth_allows_send_to_private_channel(self, mock_auth, mock_writable, mock_byok):
         client = MagicMock()
         mock_auth.return_value = (client, "U123", None)
-
-        ctx = MagicMock()
-        ctx.get_state.return_value = ["secret"]
-        mock_ctx.return_value = ctx
 
         client.chat_postMessage.return_value = {
             "ok": True,
@@ -353,35 +333,17 @@ class TestAllowPrivateChannelsHeader:
         assert result["ok"] is True
         client.conversations_info.assert_not_called()
 
-    @patch("slack_tools.get_context")
-    def test_public_channels_only_returns_false_when_header_set(self, mock_ctx):
-        ctx = MagicMock()
-        ctx.get_state.side_effect = lambda key: {
-            "is_byok": True,
-            "allow_private_channels": True,
-        }.get(key)
-        mock_ctx.return_value = ctx
-
+    @patch("slack_tools._allow_private_channels", return_value=True)
+    @patch("slack_tools._get_claims", return_value={"is_byok": True})
+    def test_public_channels_only_returns_false_when_header_set(self, mock_claims, mock_allow):
         assert slack_tools._public_channels_only() is False
 
-    @patch("slack_tools.get_context")
-    def test_public_channels_only_returns_true_when_header_not_set(self, mock_ctx):
-        ctx = MagicMock()
-        ctx.get_state.side_effect = lambda key: {
-            "is_byok": True,
-            "allow_private_channels": False,
-        }.get(key)
-        mock_ctx.return_value = ctx
-
+    @patch("slack_tools._allow_private_channels", return_value=False)
+    @patch("slack_tools._get_claims", return_value={"is_byok": True})
+    def test_public_channels_only_returns_true_when_header_not_set(self, mock_claims, mock_allow):
         assert slack_tools._public_channels_only() is True
 
-    @patch("slack_tools.get_context")
-    def test_public_channels_only_returns_false_for_oauth(self, mock_ctx):
-        ctx = MagicMock()
-        ctx.get_state.side_effect = lambda key: {
-            "is_byok": False,
-            "allow_private_channels": False,
-        }.get(key)
-        mock_ctx.return_value = ctx
-
+    @patch("slack_tools._allow_private_channels", return_value=False)
+    @patch("slack_tools._get_claims", return_value={"is_byok": False})
+    def test_public_channels_only_returns_false_for_oauth(self, mock_claims, mock_allow):
         assert slack_tools._public_channels_only() is False
