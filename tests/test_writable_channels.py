@@ -113,40 +113,34 @@ class TestValidateWritableChannel:
         assert "C12345" in err
 
     def test_matches_by_channel_id_when_allowlist_uses_ids(self):
-        ok, err = _validate_writable_channel("random", ["C1234567890"], channel_id="C1234567890")
+        ok, err = _validate_writable_channel("random", ["C09KPE8EACW"], channel_id="C09KPE8EACW")
         assert ok is True
         assert err is None
 
 
 class TestSendMessage:
-    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_writable_channels", return_value=["random"])
     @patch("slack_tools._get_authenticated_client")
-    def test_rejects_unlisted_channel(self, mock_auth, mock_ctx):
+    def test_rejects_unlisted_channel(self, mock_auth, mock_writable):
         mock_auth.return_value = (MagicMock(), "U123", None)
-        ctx = MagicMock()
-        ctx.get_state.return_value = ["random"]
-        mock_ctx.return_value = ctx
 
         result = send_message("secret", "hello")
         assert result["ok"] is False
         assert "secret" in result["error"]
 
-    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_writable_channels", return_value=[])
     @patch("slack_tools._get_authenticated_client")
-    def test_rejects_when_no_writable_channels(self, mock_auth, mock_ctx):
+    def test_rejects_when_no_writable_channels(self, mock_auth, mock_writable):
         mock_auth.return_value = (MagicMock(), "U123", None)
-        ctx = MagicMock()
-        ctx.get_state.return_value = None
-        mock_ctx.return_value = ctx
 
         result = send_message("random", "hello")
         assert result["ok"] is False
         assert "No writable channels configured" in result["error"]
 
     @patch("slack_tools._public_channels_only", return_value=False)
-    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_writable_channels", return_value=["random"])
     @patch("slack_tools._get_authenticated_client")
-    def test_sends_to_allowed_channel(self, mock_auth, mock_ctx, _mock_byok):
+    def test_sends_to_allowed_channel(self, mock_auth, mock_writable, _mock_byok):
         mock_client = MagicMock()
         mock_client.chat_postMessage.return_value = {
             "ok": True,
@@ -158,9 +152,6 @@ class TestSendMessage:
             "permalink": "https://workspace.slack.com/archives/C999/p12345678",
         }
         mock_auth.return_value = (mock_client, "U123", None)
-        ctx = MagicMock()
-        ctx.get_state.return_value = ["random"]
-        mock_ctx.return_value = ctx
 
         result = send_message("random", "hello")
         assert result["ok"] is True
@@ -171,9 +162,9 @@ class TestSendMessage:
         )
 
     @patch("slack_tools._public_channels_only", return_value=False)
-    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_writable_channels", return_value=["random"])
     @patch("slack_tools._get_authenticated_client")
-    def test_strips_hash_prefix(self, mock_auth, mock_ctx, _mock_byok):
+    def test_strips_hash_prefix(self, mock_auth, mock_writable, _mock_byok):
         mock_client = MagicMock()
         mock_client.chat_postMessage.return_value = {
             "ok": True,
@@ -181,9 +172,6 @@ class TestSendMessage:
             "channel": "C999",
         }
         mock_auth.return_value = (mock_client, "U123", None)
-        ctx = MagicMock()
-        ctx.get_state.return_value = ["random"]
-        mock_ctx.return_value = ctx
 
         result = send_message("#random", "hello")
         assert result["ok"] is True
@@ -191,9 +179,9 @@ class TestSendMessage:
             channel="random", text="hello", blocks=_build_blocks("hello")
         )
 
-    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_writable_channels", return_value=["random"])
     @patch("slack_tools._get_authenticated_client")
-    def test_returns_auth_error(self, mock_auth, mock_ctx):
+    def test_returns_auth_error(self, mock_auth, mock_writable):
         mock_auth.return_value = (None, None, {"ok": False, "error": "Not authenticated."})
 
         result = send_message("random", "hello")
@@ -202,22 +190,19 @@ class TestSendMessage:
 
 
 class TestReplyInThread:
-    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_writable_channels", return_value=["random"])
     @patch("slack_tools._get_authenticated_client")
-    def test_rejects_unlisted_channel(self, mock_auth, mock_ctx):
+    def test_rejects_unlisted_channel(self, mock_auth, mock_writable):
         mock_auth.return_value = (MagicMock(), "U123", None)
-        ctx = MagicMock()
-        ctx.get_state.return_value = ["random"]
-        mock_ctx.return_value = ctx
 
         result = reply_in_thread("secret", "1234.5678", "hello")
         assert result["ok"] is False
         assert "secret" in result["error"]
 
     @patch("slack_tools._public_channels_only", return_value=False)
-    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_writable_channels", return_value=["random"])
     @patch("slack_tools._get_authenticated_client")
-    def test_replies_to_allowed_channel(self, mock_auth, mock_ctx, _mock_byok):
+    def test_replies_to_allowed_channel(self, mock_auth, mock_writable, _mock_byok):
         mock_client = MagicMock()
         mock_client.chat_postMessage.return_value = {
             "ok": True,
@@ -229,9 +214,6 @@ class TestReplyInThread:
             "permalink": "https://workspace.slack.com/archives/C999/p12349999",
         }
         mock_auth.return_value = (mock_client, "U123", None)
-        ctx = MagicMock()
-        ctx.get_state.return_value = ["random"]
-        mock_ctx.return_value = ctx
 
         result = reply_in_thread("random", "1234.5678", "reply text")
         assert result["ok"] is True
@@ -244,9 +226,9 @@ class TestReplyInThread:
             thread_ts="1234.5678",
         )
 
-    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_writable_channels", return_value=["random"])
     @patch("slack_tools._get_authenticated_client")
-    def test_returns_auth_error(self, mock_auth, mock_ctx):
+    def test_returns_auth_error(self, mock_auth, mock_writable):
         mock_auth.return_value = (None, None, {"ok": False, "error": "Not authenticated."})
 
         result = reply_in_thread("random", "1234.5678", "hello")
@@ -273,9 +255,9 @@ class TestIsChannelId:
 
 class TestChannelIdResolution:
     @patch("slack_tools._public_channels_only", return_value=False)
-    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_writable_channels", return_value=["random"])
     @patch("slack_tools._get_authenticated_client")
-    def test_send_resolves_channel_id_to_name(self, mock_auth, mock_ctx, _mock_byok):
+    def test_send_resolves_channel_id_to_name(self, mock_auth, mock_writable, _mock_byok):
         mock_client = MagicMock()
         mock_client.conversations_info.return_value = {"channel": {"name": "random"}}
         mock_client.chat_postMessage.return_value = {
@@ -288,9 +270,6 @@ class TestChannelIdResolution:
             "permalink": "https://workspace.slack.com/archives/C999/p12345678",
         }
         mock_auth.return_value = (mock_client, "U123", None)
-        ctx = MagicMock()
-        ctx.get_state.return_value = ["random"]
-        mock_ctx.return_value = ctx
 
         result = send_message("C999", "hello")
         assert result["ok"] is True
@@ -299,54 +278,45 @@ class TestChannelIdResolution:
             channel="C999", text="hello", blocks=_build_blocks("hello")
         )
 
-    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_writable_channels", return_value=["random"])
     @patch("slack_tools._get_authenticated_client")
-    def test_send_rejects_channel_id_not_in_allowlist(self, mock_auth, mock_ctx):
+    def test_send_rejects_channel_id_not_in_allowlist(self, mock_auth, mock_writable):
         mock_client = MagicMock()
         mock_client.conversations_info.return_value = {"channel": {"name": "secret"}}
         mock_auth.return_value = (mock_client, "U123", None)
-        ctx = MagicMock()
-        ctx.get_state.return_value = ["random"]
-        mock_ctx.return_value = ctx
 
         result = send_message("C999", "hello")
         assert result["ok"] is False
         assert "secret" in result["error"]
 
-    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_writable_channels", return_value=["random"])
     @patch("slack_tools._get_authenticated_client")
-    def test_send_returns_error_for_unknown_channel_id(self, mock_auth, mock_ctx):
+    def test_send_returns_error_for_unknown_channel_id(self, mock_auth, mock_writable):
         mock_client = MagicMock()
         mock_client.conversations_info.side_effect = SlackApiError(
             "channel_not_found", MagicMock(data={"error": "channel_not_found"})
         )
         mock_auth.return_value = (mock_client, "U123", None)
-        ctx = MagicMock()
-        ctx.get_state.return_value = ["random"]
-        mock_ctx.return_value = ctx
 
         result = send_message("C000INVALID", "hello")
         assert result["ok"] is False
         assert "not found" in result["error"]
 
-    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_writable_channels", return_value=["random"])
     @patch("slack_tools._get_authenticated_client")
-    def test_send_returns_error_when_channel_has_no_name(self, mock_auth, mock_ctx):
+    def test_send_returns_error_when_channel_has_no_name(self, mock_auth, mock_writable):
         mock_client = MagicMock()
         mock_client.conversations_info.return_value = {"channel": {"id": "C999"}}
         mock_auth.return_value = (mock_client, "U123", None)
-        ctx = MagicMock()
-        ctx.get_state.return_value = ["random"]
-        mock_ctx.return_value = ctx
 
         result = send_message("C999", "hello")
         assert result["ok"] is False
         assert "not in the writable allowlist" in result["error"]
         mock_client.chat_postMessage.assert_not_called()
 
-    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_writable_channels", return_value=["C999"])
     @patch("slack_tools._get_authenticated_client")
-    def test_send_allows_channel_id_when_allowlist_uses_ids(self, mock_auth, mock_ctx):
+    def test_send_allows_channel_id_when_allowlist_uses_ids(self, mock_auth, mock_writable):
         # Allowlist holds the channel ID; the resolved name ("secret") is NOT listed.
         mock_client = MagicMock()
         mock_client.conversations_info.return_value = {"channel": {"name": "secret"}}
@@ -360,9 +330,6 @@ class TestChannelIdResolution:
             "permalink": "https://workspace.slack.com/archives/C999/p12345678",
         }
         mock_auth.return_value = (mock_client, "U123", None)
-        ctx = MagicMock()
-        ctx.get_state.return_value = ["C999"]
-        mock_ctx.return_value = ctx
 
         result = send_message("C999", "hello")
         assert result["ok"] is True
@@ -371,9 +338,9 @@ class TestChannelIdResolution:
         )
 
     @patch("slack_tools._public_channels_only", return_value=False)
-    @patch("slack_tools.get_context")
+    @patch("slack_tools._get_writable_channels", return_value=["random"])
     @patch("slack_tools._get_authenticated_client")
-    def test_reply_resolves_channel_id_to_name(self, mock_auth, mock_ctx, _mock_byok):
+    def test_reply_resolves_channel_id_to_name(self, mock_auth, mock_writable, _mock_byok):
         mock_client = MagicMock()
         mock_client.conversations_info.return_value = {"channel": {"name": "random"}}
         mock_client.chat_postMessage.return_value = {
@@ -386,9 +353,6 @@ class TestChannelIdResolution:
             "permalink": "https://workspace.slack.com/archives/C999/p12349999",
         }
         mock_auth.return_value = (mock_client, "U123", None)
-        ctx = MagicMock()
-        ctx.get_state.return_value = ["random"]
-        mock_ctx.return_value = ctx
 
         result = reply_in_thread("C999", "1234.5678", "reply text")
         assert result["ok"] is True

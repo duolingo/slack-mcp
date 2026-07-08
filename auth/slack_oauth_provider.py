@@ -13,6 +13,7 @@ MCP-issued tokens.
 import asyncio
 import json
 import logging
+import re
 import secrets
 import time
 from html import escape as html_escape
@@ -26,6 +27,7 @@ from mcp.server.auth.provider import (
     construct_redirect_uri,
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from pydantic import AnyUrl, ValidationError
 from slack_sdk import WebClient
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
@@ -34,6 +36,19 @@ from starlette.routing import Route
 from auth.token_auth import is_slack_token, resolve_slack_identity
 
 logger = logging.getLogger(__name__)
+
+# Allowed redirect URI patterns for lazily-registered clients.
+# Loopback addresses (localhost / 127.0.0.1) and well-known editor custom
+# schemes are accepted; everything else is rejected.
+_ALLOWED_REDIRECT_URI_RE = re.compile(
+    r"^("
+    r"https?://localhost(:\d+)?(/.*)?"  # http(s)://localhost[:port][/path]
+    r"|https?://127\.0\.0\.1(:\d+)?(/.*)?"  # http(s)://127.0.0.1[:port][/path]
+    r"|cursor://[^\s]*"  # cursor:// custom scheme
+    r"|vscode://[^\s]*"  # vscode:// custom scheme
+    r")$",
+    re.IGNORECASE,
+)
 
 
 class SlackOAuthProvider(InMemoryOAuthProvider):
@@ -70,6 +85,9 @@ class SlackOAuthProvider(InMemoryOAuthProvider):
         self._slack_redirect_uri = slack_redirect_uri
         self._slack_scopes = slack_scopes
 
+        # client_ids we synthesized via lazy registration, as opposed to real
+        # DCR registrations whose redirect_uris are authoritative
+        self._lazy_client_ids: set[str] = set()
         # internal_state -> {client_id, redirect_uri, state, code_challenge, scopes, created_at}
         self._pending_authorizations: dict[str, dict] = {}
         # MCP access_token string -> {token: "xoxp-...", user_id: "U..."}
@@ -117,6 +135,169 @@ class SlackOAuthProvider(InMemoryOAuthProvider):
                 len(expired_codes),
                 len(expired_access),
             )
+
+    # ------------------------------------------------------------------
+    # Lazy client re-registration
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_valid_client_id(client_id: str) -> bool:
+        """Return True if *client_id* looks structurally plausible.
+
+        We accept any non-empty printable ASCII string up to 128 chars that
+        does **not** contain whitespace.  This is intentionally liberal —
+        the only purpose is to reject obviously bogus values (empty, way too
+        long, binary garbage) while allowing the wide variety of client IDs
+        that real MCP clients generate.
+        """
+        if not client_id or len(client_id) > 128:
+            return False
+        # Must be printable ASCII with no whitespace.
+        return bool(re.match(r"^[\x21-\x7e]+$", client_id))
+
+    @staticmethod
+    def _parse_allowed_redirect_uri(redirect_uri: str | None) -> AnyUrl | None:
+        """Parse *redirect_uri* if it matches the lazy-registration allowlist.
+
+        Returns None for disallowed values and for values that match the
+        allowlist pattern but aren't valid URLs (e.g. a port above 65535) —
+        those fall through unregistered so the SDK handler returns its normal
+        invalid_request response instead of the parse error becoming a 500.
+        """
+        if not isinstance(redirect_uri, str) or not _ALLOWED_REDIRECT_URI_RE.match(redirect_uri):
+            return None
+        try:
+            return AnyUrl(redirect_uri)
+        except ValidationError:
+            return None
+
+    @staticmethod
+    def _build_default_redirect_uris() -> list[AnyUrl]:
+        """Return the set of redirect URIs assigned to lazily-registered clients."""
+        raw = [
+            "http://localhost",
+            "http://127.0.0.1",
+        ]
+        return [AnyUrl(u) for u in raw]
+
+    async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        """Register a client, clearing any lazy-registration marker.
+
+        A real DCR registration declares its own redirect_uris, so the client
+        must no longer get the looser treatment lazy registrations receive.
+        """
+        await super().register_client(client_info)
+        self._lazy_client_ids.discard(client_info.client_id)
+
+    async def _register_lazy_client(
+        self, client_id: str, redirect_uris: list[AnyUrl]
+    ) -> OAuthClientInformationFull:
+        """Register and return a synthesized client for an unknown client_id."""
+        new_client = OAuthClientInformationFull(
+            client_id=client_id,
+            redirect_uris=redirect_uris,
+            token_endpoint_auth_method="none",
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            # Without this, the client's registered scope defaults to empty and
+            # the upstream handler rejects any explicitly-requested scope with
+            # invalid_scope. Grant everything this server itself supports —
+            # the same default a fresh DCR registration would receive.
+            scope=" ".join(sorted(self._slack_scopes)),
+        )
+        await self.register_client(new_client)
+        self._lazy_client_ids.add(client_id)
+        logger.info(
+            "Lazily registered unknown client_id=%s with redirect_uris=%s",
+            client_id,
+            [str(u) for u in redirect_uris],
+        )
+        return new_client
+
+    async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
+        """Look up a registered client, lazily registering unknown IDs.
+
+        The in-memory store loses all client registrations on restart.  When
+        a previously-registered client comes back with the same *client_id*,
+        ``super().get_client()`` returns ``None`` and the framework responds
+        with ``invalid_request — Client ID not found``.
+
+        To survive this, we intercept the ``None`` case:
+        * If the *client_id* passes basic structural validation we register a
+          new ``OAuthClientInformationFull`` on the fly with redirect_uris
+          restricted to loopback addresses and known editor schemes, then
+          return it.
+        * If the *client_id* is structurally invalid (empty, too long, binary
+          junk) we return ``None`` so the caller can surface the proper
+          ``invalid_client`` OAuth error.
+
+        A client_id alone carries no redirect_uri, so this only ever assigns
+        the bare loopback defaults. ``/authorize`` requests go through
+        ``_preregister_client_for_authorize`` first, which registers using
+        the caller's actual redirect_uri — real clients almost always use a
+        specific port and path, not a bare loopback URI — before this method
+        is reached.
+        """
+        client = await super().get_client(client_id)
+        if client is not None:
+            return client
+
+        # Unknown client_id — try to lazily register.
+        if not self._is_valid_client_id(client_id):
+            return None
+
+        return await self._register_lazy_client(client_id, self._build_default_redirect_uris())
+
+    async def _preregister_client_for_authorize(self, request: Request) -> None:
+        """Lazily register an unknown client_id — or extend a lazily-registered
+        one — using this request's own redirect_uri, before the upstream
+        handler validates it against the client's registered URIs.
+
+        Without this, a reconnecting client whose registration was lost (e.g.
+        a task recycle wiping the in-memory store) would only ever get
+        ``get_client()``'s bare loopback defaults, which won't match a real
+        client's redirect_uri — those almost always carry a specific port and
+        callback path (e.g. ``http://localhost:53219/callback``), not a bare
+        ``http://localhost``.
+
+        Extending an existing lazy registration matters because the lazy
+        registration often happens on a request that carries no redirect_uri
+        at all: after a restart, the client's first contact is typically a
+        /token refresh attempt, whose ``get_client()`` call registers the
+        client with only the bare defaults. It also covers clients that pick
+        a fresh ephemeral callback port on each authorization. Clients
+        registered through real DCR are never extended — their declared
+        redirect_uris stay authoritative.
+        """
+        # The SDK serves /authorize for both GET and POST; POST carries the
+        # parameters in the form body. Starlette caches the parsed form on
+        # the request, so the downstream handler's own form() read still works.
+        if request.method == "POST":
+            params = await request.form()
+        else:
+            params = request.query_params
+
+        client_id = params.get("client_id")
+        if not isinstance(client_id, str) or not self._is_valid_client_id(client_id):
+            return
+
+        existing = await super().get_client(client_id)
+        if existing is not None and client_id not in self._lazy_client_ids:
+            return  # real DCR registration — don't clobber its redirect_uris
+
+        candidate = self._parse_allowed_redirect_uri(params.get("redirect_uri"))
+
+        if existing is None:
+            redirect_uris = self._build_default_redirect_uris()
+            if candidate is not None and candidate not in redirect_uris:
+                redirect_uris.append(candidate)
+            await self._register_lazy_client(client_id, redirect_uris)
+            return
+
+        registered = existing.redirect_uris or []
+        if candidate is None or candidate in registered:
+            return
+        await self._register_lazy_client(client_id, [*registered, candidate])
 
     async def authorize(
         self, client: OAuthClientInformationFull, params: AuthorizationParams
@@ -482,15 +663,65 @@ class SlackOAuthProvider(InMemoryOAuthProvider):
     def get_routes(self, **kwargs) -> list[Route]:
         """
         Get standard OAuth routes plus the Slack callback route.
+
+        Also wraps the ``/authorize`` endpoint so that a genuinely invalid
+        client_id surfaces the OAuth ``invalid_client`` error code instead
+        of the generic ``invalid_request`` returned by the upstream handler.
         """
         routes = super().get_routes(**kwargs)
 
-        # Add the Slack OAuth callback route
-        slack_callback_route = Route(
-            "/oauth2callback",
-            endpoint=self._handle_slack_callback,
-            methods=["GET"],
-        )
-        routes.append(slack_callback_route)
+        # Wrap the /authorize route to fix the error code for invalid clients.
+        wrapped: list[Route] = []
+        for route in routes:
+            if isinstance(route, Route) and route.path == "/authorize":
+                original_endpoint = route.endpoint
 
-        return routes
+                async def _authorize_wrapper(
+                    request: Request,
+                    _original=original_endpoint,
+                ) -> HTMLResponse:
+                    await self._preregister_client_for_authorize(request)
+                    response = await _original(request)
+                    # The upstream handler returns a 400 JSON body with
+                    # ``"error": "invalid_request"`` when get_client() yields
+                    # None.  Since our get_client() only returns None for
+                    # structurally invalid client IDs, rewrite that to the
+                    # more appropriate ``invalid_client``.
+                    if getattr(response, "status_code", None) == 400:
+                        try:
+                            body = json.loads(response.body)
+                            if (
+                                body.get("error") == "invalid_request"
+                                and "not found" in (body.get("error_description") or "").lower()
+                            ):
+                                body["error"] = "invalid_client"
+                                return HTMLResponse(
+                                    content=json.dumps(body),
+                                    status_code=400,
+                                    media_type="application/json",
+                                    headers={"Cache-Control": "no-store"},
+                                )
+                        except (json.JSONDecodeError, AttributeError):
+                            pass
+                    return response
+
+                wrapped.append(
+                    Route(
+                        route.path,
+                        endpoint=_authorize_wrapper,
+                        methods=route.methods,
+                    )
+                )
+            else:
+                wrapped.append(route)
+
+        # Add the Slack OAuth callback route
+        wrapped.append(
+            Route(
+                "/oauth2callback",
+                endpoint=self._handle_slack_callback,
+                methods=["GET"],
+            )
+        )
+
+        return wrapped

@@ -11,7 +11,12 @@ import re
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastmcp.server.dependencies import get_context
+from auth.auth_info_middleware import (
+    ALLOW_PRIVATE_CHANNELS_HEADER,
+    WRITABLE_CHANNELS_HEADER,
+    _parse_writable_channels,
+)
+from fastmcp.server.dependencies import get_access_token, get_http_request
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
@@ -316,7 +321,7 @@ def send_message(channel: str, text: str) -> dict:
     if error:
         return error
 
-    writable_channels = get_context().get_state("writable_channels")
+    writable_channels = _get_writable_channels()
     normalized, err = _validate_write_channel(client, channel, writable_channels)
     if err:
         return err
@@ -348,7 +353,7 @@ def reply_in_thread(channel: str, thread_ts: str, text: str) -> dict:
     if error:
         return error
 
-    writable_channels = get_context().get_state("writable_channels")
+    writable_channels = _get_writable_channels()
     normalized, err = _validate_write_channel(client, channel, writable_channels)
     if err:
         return err
@@ -479,20 +484,46 @@ def _build_search_query(
     return " ".join(query_parts)
 
 
+def _get_claims() -> dict:
+    """Return the verified access token's claims, or {} outside a request.
+
+    SlackOAuthProvider attaches slack_token/slack_user_id (and is_byok for
+    raw-token callers) to the claims when it validates the bearer token.
+    """
+    try:
+        access_token = get_access_token()
+    except Exception:
+        return {}
+    return getattr(access_token, "claims", {}) or {}
+
+
+def _get_writable_channels() -> list[str]:
+    """Return the request's X-Writable-Channels allowlist, [] if absent."""
+    try:
+        http_request = get_http_request()
+    except Exception:
+        return []
+    return _parse_writable_channels(http_request.headers.get(WRITABLE_CHANNELS_HEADER))
+
+
+def _allow_private_channels() -> bool:
+    """Return True if the request opts into private channels via header."""
+    try:
+        http_request = get_http_request()
+    except Exception:
+        return False
+    raw_header = http_request.headers.get(ALLOW_PRIVATE_CHANNELS_HEADER, "")
+    return raw_header.strip().lower() in ("true", "1", "yes")
+
+
 def _public_channels_only() -> bool:
     """Return True if the caller should be restricted to public channels.
 
     BYOK callers are restricted by default unless X-Allow-Private-Channels is set.
     """
-    try:
-        ctx = get_context()
-        if not ctx:
-            return False
-        if not ctx.get_state("is_byok"):
-            return False
-        return not ctx.get_state("allow_private_channels")
-    except Exception:
+    if not _get_claims().get("is_byok"):
         return False
+    return not _allow_private_channels()
 
 
 def _check_public_channel(client, channel_id: str) -> dict | None:
@@ -515,25 +546,21 @@ def _check_public_channel(client, channel_id: str) -> dict | None:
 
 def _get_oauth21_client():
     """
-    Get a Slack client from OAuth 2.1 context (set by AuthInfoMiddleware from token claims).
+    Get a Slack client from the verified access token's claims.
 
-    In proxy mode, the Slack token was already validated during the OAuth exchange
-    and is stored server-side. AuthInfoMiddleware extracts it from token claims.
+    In proxy mode, the Slack token was already validated during the OAuth
+    exchange and is stored server-side; SlackOAuthProvider attaches it to the
+    MCP token's claims.
 
     Returns:
         tuple: (client, user_id) or (None, None)
     """
-    try:
-        ctx = get_context()
-        if ctx:
-            slack_token = ctx.get_state("slack_token")
-            user_id = ctx.get_state("authenticated_user_id")
-            if slack_token and user_id:
-                logger.debug(f"OAuth 2.1: Got Slack token from context for user {user_id}")
-                return WebClient(token=slack_token), user_id
-    except Exception as e:
-        logger.debug(f"OAuth 2.1: Could not get token from FastMCP context: {e}")
-
+    claims = _get_claims()
+    slack_token = claims.get("slack_token")
+    user_id = claims.get("slack_user_id")
+    if slack_token and user_id:
+        logger.debug(f"OAuth 2.1: Got Slack token from claims for user {user_id}")
+        return WebClient(token=slack_token), user_id
     return None, None
 
 
@@ -947,6 +974,7 @@ def get_users(
 
 def get_channels(
     channel_id: Optional[str] = None,
+    query: Optional[str] = None,
     types: Optional[str] = None,
     limit: int = 100,
     cursor: Optional[str] = None,
@@ -956,23 +984,33 @@ def get_channels(
     """
     Get channels from Slack workspace.
 
-    Dual-mode function:
-    - Without channel_id: Lists channels with optional type filter (defaults to public channels only)
-    - With channel_id: Gets detailed info for a specific channel, optionally with members
+    Three modes, checked in order:
+    - channel_id set: Gets detailed info for that specific channel, optionally with members
+      (query is ignored)
+    - query set: Searches all channels for a name match (see below)
+    - neither set: Lists channels with optional type filter, one page per call
+
+    Search mode paginates through the full conversations_list and filters client-side
+    on a case-insensitive substring match, since Slack has no server-side name-search
+    endpoint for non-admin tokens. It scans exhaustively like _resolve_channel_name
+    (ignoring `cursor`) and returns up to `limit` matches plus a `truncated` flag
+    instead of `next_cursor`.
 
     Uses the authenticated user's credentials from the current session context.
 
     Args:
         channel_id: Optional channel ID. If provided, gets specific channel info
-        types: Filter by channel types when listing. Defaults to "public_channel" if not specified.
+        query: Optional substring to match against channel names (case-insensitive,
+               '#' optional). Triggers search mode; ignored if channel_id is set.
+        types: Filter by channel types. Defaults to "public_channel" if not specified.
                Examples: "public_channel,private_channel", "im,mpim" (DMs and group DMs)
-        limit: Maximum number of channels to retrieve when listing (default: 100, max: 1000)
-        cursor: Pagination cursor from previous response (for listing mode)
+        limit: Maximum number of channels to retrieve/match (default: 100, max: 1000)
+        cursor: Pagination cursor from previous response (plain listing mode only)
         include_members: Include member list when getting specific channel (default: False)
         compact: If True (default), return only essential fields. False for full Slack API response.
 
     Returns:
-        Dictionary with channel(s) and pagination info
+        Dictionary with channel(s) and pagination info; shape depends on mode
     """
     client, authenticated_user_id, error = _get_authenticated_client()
     if error:
@@ -1035,29 +1073,76 @@ def get_channels(
                     result["members_error"] = e.response.get("error", "Unknown error")
 
             return result
-        else:
-            # List all channels
-            logger.debug(f"get_channels called by user {authenticated_user_id} to list channels")
-            kwargs = {"limit": min(limit, 1000)}
-            if cursor:
-                kwargs["cursor"] = cursor
-            if types:
-                kwargs["types"] = types
 
-            response = client.conversations_list(**kwargs)
+        if query:
+            # Search mode: scan every channel, filtering by substring match on name
+            normalized_query = query.lstrip("#").lower()
+            search_limit = min(limit, 1000)
 
-            if not response.get("ok"):
-                return {"ok": False, "error": response.get("error", "Unknown error")}
+            logger.debug(f"get_channels called by user {authenticated_user_id} to search channels")
 
-            channels = response.get("channels", [])
+            matches = []
+            scan_cursor = None
+            truncated = False
+
+            while True:
+                kwargs = {"limit": 1000}
+                if types:
+                    kwargs["types"] = types
+                if scan_cursor:
+                    kwargs["cursor"] = scan_cursor
+
+                response = client.conversations_list(**kwargs)
+
+                if not response.get("ok"):
+                    return {"ok": False, "error": response.get("error", "Unknown error")}
+
+                for channel in response.get("channels", []):
+                    if normalized_query not in channel.get("name", "").lower():
+                        continue
+                    if len(matches) >= search_limit:
+                        truncated = True
+                        break
+                    matches.append(channel)
+
+                if truncated:
+                    break
+
+                scan_cursor = response.get("response_metadata", {}).get("next_cursor")
+                if not scan_cursor:
+                    break
+
             if compact:
-                channels = [_compact_channel(c) for c in channels]
+                matches = [_compact_channel(c) for c in matches]
 
             return {
                 "ok": True,
-                "channels": channels,
-                "next_cursor": response.get("response_metadata", {}).get("next_cursor"),
+                "channels": matches,
+                "truncated": truncated,
             }
+
+        # List all channels (single page)
+        logger.debug(f"get_channels called by user {authenticated_user_id} to list channels")
+        kwargs = {"limit": min(limit, 1000)}
+        if cursor:
+            kwargs["cursor"] = cursor
+        if types:
+            kwargs["types"] = types
+
+        response = client.conversations_list(**kwargs)
+
+        if not response.get("ok"):
+            return {"ok": False, "error": response.get("error", "Unknown error")}
+
+        channels = response.get("channels", [])
+        if compact:
+            channels = [_compact_channel(c) for c in channels]
+
+        return {
+            "ok": True,
+            "channels": channels,
+            "next_cursor": response.get("response_metadata", {}).get("next_cursor"),
+        }
 
     except SlackApiError as e:
         logger.error(f"Slack API error in get_channels: {e.response.get('error', 'Unknown error')}")
