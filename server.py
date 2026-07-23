@@ -361,6 +361,9 @@ def main():
         app = server.http_app(
             transport="streamable-http",
             allowed_hosts=[public_host] if public_host else [],
+            # Stateless so sessions survive ECS deploys (in-memory sessions die
+            # with the task and gateway clients then fail with "Session not found").
+            stateless_http=True,
         )
         uvicorn.run(
             HealthCheckBypass(app),
